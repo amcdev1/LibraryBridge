@@ -4,121 +4,185 @@
 
 # LibraryBridge
 
-> Move Steam Proton data off unsupported game-drive filesystems without deleting the original.
+Move Steam Proton compatibility data off game drives that cannot host it, onto a
+Linux filesystem — without deleting the original.
 
-LibraryBridge detects Steam libraries whose Proton compatibility data is on a
-filesystem that cannot safely support it. It copies that data to a Linux
-filesystem, verifies the copy, and leaves a symlink where Steam expects it.
-It can also find standalone and GOG games and prepare them for Lutris.
+LibraryBridge finds Steam libraries whose Proton `compatdata` sits on a
+filesystem that cannot safely support it (NTFS), copies that data to a Linux
+filesystem, verifies the copy file by file, and leaves a symlink where Steam
+expects the data to be. It can also find standalone and GOG games and prepare
+them for Lutris.
 
-> LibraryBridge is an independent project and is not affiliated with, endorsed by, or sponsored by Valve Corporation or Steam. Steam and Proton are trademarks of Valve Corporation.
+> LibraryBridge is an independent project and is not affiliated with, endorsed
+> by, or sponsored by Valve Corporation or Steam. Steam and Proton are
+> trademarks of Valve Corporation.
 
-**Early Linux preview — not ready for important data.** The code and automated
-tests are in place, but Linux filesystem behavior, Steam, Proton, Steam Cloud,
-Flatpak Steam, and real Lutris still need acceptance testing.
+## Why the data has to move
 
-## At a glance
+A Wine prefix — the `pfx` inside each game's `compatdata` folder — needs
+real Linux filesystem behavior to work under Proton:
 
-| Area | Current status |
-| --- | --- |
-| Target | Linux; macOS is development-only |
-| Steam | Native and Flatpak layouts are not yet Linux-validated |
-| Filesystems | NTFS is unverified; exFAT is intentionally refused |
-| Installation | Source build only; no packaged releases yet |
-| Safety | Read-only scan, dry-run preview, verified copy, retained original |
+- POSIX permissions on every file and directory
+- symlinks that behave like Linux symlinks
+- case-sensitive names
+- safe `dosdevices` drive mappings
 
-## How the repair stays safe
+**NTFS provides none of that reliably**, no matter which driver mounts it. A
+prefix on NTFS fails in subtle ways: games that install fine break when they
+try to write, saves corrupt, permissions collapse, and case-only renames
+collide. Proton itself documents NTFS as unsupported for its prefixes.
 
-**Nothing is ever deleted.** A repair renames your original `compatdata` to
-`compatdata.backup` beside itself and leaves it there.
-The copy is written under a temporary name and only renamed into place after
-every file has been verified by hash.
+So the problem is not *where the symlink points* — it is that the data
+physically sits on a filesystem that cannot hold a working prefix.
 
-That rule is why there is no journal, no transaction log and no registry file.
-Because no step destroys anything, every state an interruption can leave
-behind can be read straight off the disk.
+**A symlink alone cannot fix this.** A symlink only says "look over here
+instead." If the data stays on NTFS, the symlink points at the same broken
+filesystem. LibraryBridge's repair does both halves of the fix:
+
+1. **It moves the data** — copies every prefix to a Linux filesystem and
+   verifies the copy.
+2. **It redirects Steam** — renames the original aside as `compatdata.backup`
+   and puts a symlink where Steam looks, so Steam keeps working with no
+   configuration changes.
+
+The data is on Linux where it can actually work; the game drive keeps its
+games and the original data; and Steam never knows the difference.
+
+## Where the data goes
+
+Relocated data lives under your Linux data home by default:
+
+```
+~/.local/share/librarybridge/<Library>-<id>/compatdata
+```
+
+If you have a roomier Linux filesystem (a dedicated games SSD, a second drive
+formatted ext4 or btrfs), point repairs at it with `--data-dir`:
+
+```bash
+librarybridge --data-dir /mnt/games/librarybridge fix <id>
+```
+
+The destination must be a Linux filesystem for the same reason the data had to
+leave NTFS in the first place. exFAT is refused; so is a destination on the
+same filesystem as the library.
+
+> Note: `--data-dir` applies to *new* repairs. An existing repair stays where
+> it is, and the tool keeps treating it as the repaired location for that
+> library.
+
+**Space.** The copied prefixes live on the Linux drive, so they take up room
+there, not on the game drive. Your played games are what add prefixes; games
+you have never launched add nothing. Check the summary at any time:
+
+```bash
+librarybridge storage
+```
+
+It shows each moved library, how much it occupies, what the original still
+holds, and how much headroom is left. When a game has launched and loaded its
+saves from the moved copy, you can reclaim the game drive's space:
+
+```bash
+librarybridge backup <id>
+```
+
+The backup is deleted only when the library is repaired, you have recorded
+that a game actually works, and the moved copy still matches what it replaced.
+Nothing else is ever deleted.
+
+## Features
+
+- **Read-only by default.** `scan` and `--dry-run` change nothing.
+- **Verified copies.** Every file is checked against the source before the
+  original is touched.
+- **Nothing is ever deleted by a repair.** Your original stays as
+  `compatdata.backup` until you remove it.
+- **Recoverable.** An interrupted repair is finished, not restarted, by
+  running `fix` again. `undo` copies the current data back.
+- **Native and Flatpak Steam.** Both layouts are discovered and repaired; only
+  one repair scope is created for a library shared by both.
+- **NTFS detection that matches reality.** Kernel `ntfs3` and `ntfs-3g`
+  (including udisks-style mounts that hide the driver) are recognised and
+  reported; unknown filesystems are blocked with an explanation rather than
+  guessed.
+- **Lutris import.** Finds GOG and standalone Windows games and hands them to
+  Lutris through its own installer, one dialog per game.
+- **CLI and window, one engine.** The desktop window only runs the command
+  line tool and shows its output, so the two can never disagree.
+
+## Requirements
+
+- **Linux.** LibraryBridge reads `/proc/self/mountinfo` and needs a display
+  per session. It is not supported elsewhere.
+- **Rust and Cargo** to build from source (no packaged releases yet).
+- **A Linux filesystem for the destination** (ext4, btrfs, xfs…). exFAT is
+  intentionally refused.
 
 ## Installation
-
-There are no packaged downloads yet. Build the two binaries on Linux with
-Rust and Cargo:
 
 ```bash
 cargo build --locked --release --workspace
 ```
 
-The binaries land in `target/release`: `librarybridge` and
-`librarybridge-gui`. The CLI is the core repair tool; the GUI is an optional
-window over the same commands.
+The binaries land in `target/release`: `librarybridge` (the core tool) and
+`librarybridge-gui` (an optional window over the same commands).
 
-## Before you start
+### Desktop integration (so the icon shows)
 
-- Use a Linux filesystem for the destination. exFAT is intentionally refused.
-- Close Steam before running a repair. LibraryBridge refuses to mutate a live
-  Steam installation.
-- Start with a disposable library or a backup you have verified separately.
-- Run `scan` and the `--dry-run` preview before applying anything.
+On Wayland (and most modern desktops) the *taskbar and app-menu icon is
+provided by a `.desktop` entry*, not by the window itself. Without it you get
+a generic icon. The same script also symlinks the binaries into `~/.local/bin`
+so the app can be launched from the app grid:
 
-## Quick start: repair Steam
+```bash
+packaging/install-desktop.sh
+```
+
+Run it after every build that changes the GUI. It installs
+`~/.local/share/applications/librarybridge.desktop` and the hicolor icons
+(16→512 px), creates `~/.local/bin/librarybridge{,-gui}`, and refreshes the
+desktop caches. When distributing, ship the two binaries **and** the
+`packaging/linux/usr/share/{applications,icons/hicolor}` tree, and run this
+script (or your packaging system's equivalent) so the icon and launch entry
+follow the app.
+
+To undo: remove `~/.local/share/applications/librarybridge.desktop`,
+`~/.local/share/icons/hicolor/*/apps/librarybridge.png`, and
+`~/.local/bin/librarybridge{,-gui}`.
+
+## Quick start
 
 ```bash
 ./target/release/librarybridge scan
 ```
 
-`scan` changes nothing and needs no arguments. It lists your Steam libraries,
-the filesystem each one is on, how many prefixes it holds, and whether the
-repair applies. If it does:
+`scan` changes nothing. It lists your Steam libraries, the filesystem each one
+is on, how many prefixes it holds, and whether the repair applies. For a
+library that needs it:
 
 ```bash
-./target/release/librarybridge fix <id> --dry-run
-./target/release/librarybridge fix <id>
+./target/release/librarybridge fix <id> --dry-run   # preview, changes nothing
+./target/release/librarybridge fix <id>             # run it
 ```
 
-Close Steam first; the tool refuses to run while it is open. `fix` copies the
-library's compatdata to your Linux drive, checks every file, renames the
-original aside, and puts a symlink where Steam expects it.
+**Close Steam first.** The tool refuses to run a repair while Steam is open,
+because writes made during the move would be lost.
 
-Inspect retained data and reverse a repair when needed:
+Inspect what is kept, and reverse a repair when needed:
 
 ```bash
 ./target/release/librarybridge storage
-./target/release/librarybridge undo <id>
+./target/release/librarybridge backup <id>   # reclaim the game drive after confirmation
+./target/release/librarybridge undo <id>     # copy the current data back, remove the link
 ```
 
-`undo` copies the *current* data back, not the backup, so saves made since the
-repair are the ones that survive. Do not delete a `.backup` directory until
-you have launched a game and confirmed its saves.
+`undo` copies the *current* data back — saves made since the repair survive.
+`backup` is the only deletion in the whole tool, and it is gated (see
+[Where the data goes](#where-the-data-goes)).
 
-If a repair is interrupted, run `fix` again. It detects that the original was
-already moved aside and finishes the remaining step.
-
-## Optional: import games into Lutris
-
-This reads only the folders you name.
-
-```bash
-./target/release/librarybridge lutris detect
-./target/release/librarybridge lutris scan --root /run/media/you/Games
-```
-
-It finds GOG installs from their metadata, DRM-free Windows games by ranking
-the executables in each folder, and native Linux launchers. It tells you why
-it picked each one and how confident it is, and offers the runner-up
-executables when it is guessing.
-
-Steam games are listed but not offered for import, because Lutris already
-shows those through its own Steam source and importing them would make
-duplicates.
-
-```bash
-./target/release/librarybridge lutris plan --root /run/media/you/Games --candidate <id> --output plan.json
-./target/release/librarybridge lutris import --plan plan.json
-```
-
-`plan` writes a file you can read and edit before anything reaches Lutris.
-`import` rechecks every path and hands each game to Lutris through its own
-installer, which shows a dialog per game. No game files, prefixes or saves are
-ever modified.
+If a repair is interrupted, run `fix` again. It detects the state left behind
+and finishes the remaining step instead of starting over.
 
 ## Desktop window
 
@@ -126,30 +190,52 @@ ever modified.
 ./target/release/librarybridge-gui
 ```
 
-Two screens for the two jobs. Folders are picked with the desktop's own file
-chooser, or typed in if no chooser is available.
+The window shows the same libraries, filesystems, and states as `scan`, keeps
+the location of every library visible, and shows a coloured status for each
+one. It can set where relocated data goes (the same `--data-dir` choice, saved
+between sessions), review a repair as the tool would run it, and apply it.
 
-The window holds no repair or discovery logic. It runs the command line tool
-beside it and shows you that tool's own dry run before anything changes, so
-the two can never describe an operation differently. Anything the window can
-do is reachable from a terminal, which is what keeps recovery honest when the
-window will not start.
+Every action the window takes runs the command line tool and displays that
+tool's own output, so nothing the window says can disagree with what the tool
+does. Anything reachable in the window is also reachable from a terminal —
+which is what keeps recovery honest if the window will not start.
 
-## Support and limitations
+## Optional: import games into Lutris
 
-- **Linux is required for real use.** macOS is only a development and test
-  environment.
-- **exFAT is refused**, because it cannot provide the symlink behavior this
-  repair needs.
-- **No packages or release downloads exist yet.** You build from source.
-- **Steam Runtime, Flatpak Steam, real Lutris, Steam Cloud, and NTFS drivers
-  still need Linux acceptance testing.**
-- **Timestamps, hard links, and sparse files** are not preserved on copy.
-- **There is no lock** between two running copies of the tool.
+```bash
+./target/release/librarybridge lutris detect
+./target/release/librarybridge lutris scan --root /run/media/you/Games
+```
 
-A successful repair does not prove that a particular game works under Proton.
+This reads only the folders you name. It finds GOG installs from their own
+metadata, DRM-free Windows games by ranking the executables, and native Linux
+launchers — explaining each choice and its confidence. Steam games are listed
+but not offered for import, because Lutris already shows those through its own
+Steam source.
 
-## Development checks
+```bash
+./target/release/librarybridge lutris plan --root /run/media/you/Games --candidate <id> --output plan.json
+./target/release/librarybridge lutris import --plan plan.json
+```
+
+`plan` writes a file you can read and edit first. `import` rechecks every path
+and hands each game to Lutris through its own installer, which shows a dialog
+per game. No game files, prefixes, or saves are ever modified.
+
+## Safety model
+
+- A repair **never deletes**. It renames your original to
+  `compatdata.backup` beside itself and leaves it there.
+- The copy is written under a temporary name and only renamed into place after
+  every file has been verified by hash.
+- Because no step destroys anything, every state an interruption can leave
+  behind is readable straight off the disk — there is no journal or registry
+  that can drift from reality.
+- A repair proves the files copied. It does **not** prove a particular game
+  runs under Proton; that is a separate check you record with
+  `librarybridge evidence <id>` after playing.
+
+## Development
 
 ```bash
 cargo test --locked --workspace
@@ -157,24 +243,28 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo build --locked --release --workspace
 ```
 
-The automated suite covers parsing, discovery, copying, verification, recovery,
-symlink safety, dry-run behavior, and the command flows against synthetic Steam
-trees. It does not replace testing on Linux with real filesystems, Steam, Proton,
-Steam Cloud, or Lutris.
+The automated suite covers parsing, discovery, copying, verification,
+recovery, symlink safety, dry-run behavior, and command flows against
+synthetic Steam trees.
 
-## Reporting a problem
+## Limitations
 
-When reporting an issue, include the LibraryBridge version or commit, Linux
-distribution and kernel, filesystem and mount driver, Steam installation type,
-and the command output with personal paths redacted. Do not attach saves, whole
-Proton prefixes, registry files, or Steam account configuration.
+- **Timestamps, hard links, and sparse files** are not preserved on copy. The
+  review discloses hard links before a repair; the rest is disclosed here.
+- **No lock between two running copies** of the tool. Run one at a time.
+- **Do not delete `compatdata.backup` by hand before you are sure.** Use
+  `librarybridge backup <id>` so the tool verifies first.
+- A successful repair does not make a game work under Proton; it only fixes
+  where Proton's data lives.
 
-## Contributing
+## Reporting a problem and contributing
 
-LibraryBridge is in early Linux preview. Keep changes focused, run the
-development checks above, and describe the filesystem and Steam behavior you
-tested. Never include game saves, Proton prefixes, or account data in issues or
-pull requests.
+Keep changes focused, run the development checks above, and describe the
+filesystem and Steam behavior you tested. When reporting an issue, include the
+LibraryBridge version or commit, your Linux distribution and kernel,
+filesystem and mount driver, Steam installation type, and the command output
+with personal paths redacted. Never include game saves, Proton prefixes,
+registry files, or Steam account data.
 
 ## License
 
@@ -182,6 +272,7 @@ LibraryBridge is available under the MIT License. See [LICENSE](LICENSE).
 
 ## In plain English
 
-Keep your games on the external drive. Put Proton data on a filesystem it can
-use. Preserve what was already there, and explain anything that still needs
-attention.
+Keep your games on the external drive. Put Proton's working data on a
+filesystem it can use — a Linux one. Preserve what was already there, explain
+everything that still needs attention, and never delete anything a repair did
+not clearly replace.

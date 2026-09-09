@@ -55,6 +55,9 @@ impl Dir {
     pub fn kind(&self, name: &Path) -> Result<Kind, String> {
         match fs::statat(&self.fd, name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) => {
+                #[allow(clippy::unnecessary_cast)]
+                // st_mode is already u32 on Linux but not on macOS, so the
+                // cast is required for the code to build on both.
                 let mode = stat.st_mode as u32 & 0o170000;
                 Ok(match mode {
                     0o040000 => Kind::Directory,

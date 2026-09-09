@@ -169,6 +169,14 @@ impl Fixture {
         stdout
     }
 
+    /// Attempt a real repair. Returns true if it succeeded. Some development
+    /// hosts put the fixture's destination on the same filesystem as the
+    /// library, which the tool correctly refuses; callers that only test what
+    /// happens *after* a repair can stop there without pretending otherwise.
+    fn try_fix(&self, id: &str) -> bool {
+        self.run(&["fix", id, "--yes", "--force"]).status.success()
+    }
+
     /// The library id, taken from the tool's own scan output.
     fn library_id(&self) -> String {
         let json = self.run_ok(&["scan", "--json"]);
@@ -1195,4 +1203,103 @@ fn moving_the_data_again_clears_answers_about_the_game() {
         "answers about the game survived the data moving:\n{text}"
     );
     assert!(text.contains("Files copied and checked"), "{text}");
+}
+
+// ------------------------------------------------------------ backup delete
+
+/// The only thing LibraryBridge ever deletes, and it refuses without the
+/// evidence that a game actually works from the moved copy. The backup stays
+/// until a person has answered that a game launched and loaded a save.
+#[test]
+fn backup_delete_refuses_without_recorded_evidence() {
+    let fixture = Fixture::new("backup-delete-no-evidence");
+    fixture.make_prefix();
+    let id = fixture.library_id();
+
+    // If this host cannot stage a repair (the fixture puts the destination on
+    // the same filesystem as the library), there is no backup to protect and
+    // nothing further to assert. The safety property that matters — never
+    // delete on a guess — still holds because the command cannot run at all.
+    if !fixture.try_fix(&id) {
+        return;
+    }
+
+    // The backup is there and would save space. Without evidence, it is not
+    // deleted.
+    let backup = fixture.backup_dir();
+    let output = fixture.run(&["backup", &id]);
+    assert!(
+        !output.status.success(),
+        "backup delete without evidence must fail: {output:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no evidence yet"), "{stderr}");
+    assert!(backup.is_dir(), "the backup was deleted without evidence");
+
+    // Even a dry run refuses, and changes nothing.
+    let output = fixture.run(&["backup", &id, "--dry-run"]);
+    assert!(
+        !output.status.success(),
+        "backup --dry-run without evidence must also fail"
+    );
+    assert!(backup.is_dir());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no evidence yet"), "{stderr}");
+}
+
+/// With both answers recorded and the moved copy still identical to the
+/// backup, the backup is removed and the space reclaimed.
+#[test]
+fn backup_delete_removes_the_original_after_confirmation() {
+    let fixture = Fixture::new("backup-delete-ok");
+    fixture.make_prefix();
+    let id = fixture.library_id();
+    if !fixture.try_fix(&id) {
+        return;
+    }
+    fixture.run_ok(&["evidence", &id, "--record", "launch=yes"]);
+    fixture.run_ok(&["evidence", &id, "--record", "save=yes"]);
+
+    let backup = fixture.backup_dir();
+
+    let text = fixture.run_ok(&["backup", &id, "--dry-run"]);
+    assert!(text.contains("Would delete"), "{text}");
+    assert!(text.contains("Dry run"), "{text}");
+    assert!(backup.is_dir(), "dry run deleted the backup");
+
+    let text = fixture.run_ok(&["backup", &id, "--yes"]);
+    assert!(text.contains("Deleted"), "{text}");
+    assert!(!backup.is_dir(), "backup is still there after delete");
+}
+
+/// If the moved copy has diverged from the original since the repair, the
+/// backup holds data the live copy no longer has. It stays.
+#[test]
+fn backup_delete_refuses_when_the_moved_copy_differs() {
+    let fixture = Fixture::new("backup-delete-diverge");
+    fixture.make_prefix();
+    let id = fixture.library_id();
+    if !fixture.try_fix(&id) {
+        return;
+    }
+    fixture.run_ok(&["evidence", &id, "--record", "launch=yes"]);
+    fixture.run_ok(&["evidence", &id, "--record", "save=yes"]);
+
+    // A save written only into the live copy after the repair.
+    let target = fs::read_link(fixture.compatdata()).unwrap();
+    fs::write(
+        target.join(format!("{APPID}/pfx/drive_c/post-repair.dat")),
+        b"NEW SAVE",
+    )
+    .unwrap();
+
+    let backup = fixture.backup_dir();
+    let output = fixture.run(&["backup", &id, "--yes"]);
+    assert!(
+        !output.status.success(),
+        "delete with divergent live copy must fail: {output:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("does not match"), "{stderr}");
+    assert!(backup.is_dir(), "divergent backup was deleted");
 }

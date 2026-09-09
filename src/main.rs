@@ -33,6 +33,8 @@ COMMANDS
     fix <library>        Copy this library's compatdata to your Linux drive,
                          move the original aside, and link to the copy
     undo <library>       Copy the data back and remove the link
+    backup <library>     After a repair is confirmed working, delete the saved
+                         original to reclaim its space. Nothing else is deleted
     storage              Show what is stored and how much space it uses
     evidence <library>   Show what has been established, and record an answer
 
@@ -46,6 +48,8 @@ COMMANDS
 
 OPTIONS
     --steam-root PATH    Use this Steam installation instead of searching
+    --data-dir PATH      Store relocated Proton data here instead of under your
+                         data home. Must be a Linux filesystem.
     --root PATH          Folder to scan for games; repeat for more
     --candidate ID       Game to include in a plan; repeat for more
     --output PATH        Where `lutris plan` writes its file
@@ -68,6 +72,10 @@ NOTES
     Nothing is ever deleted. `fix` renames your original compatdata to
     compatdata.backup beside itself and leaves it there.
     Close Steam before repairing.
+
+    To install the desktop entry and icon for the window (needed for the
+    taskbar/app-menu icon on Wayland), run:
+        packaging/install-desktop.sh
 ";
 
 fn main() -> ExitCode {
@@ -82,6 +90,7 @@ fn main() -> ExitCode {
 
     let mut options = commands::Options {
         steam_root: None,
+        data_dir: None,
         json: false,
         dry_run: false,
         force: false,
@@ -118,7 +127,7 @@ fn main() -> ExitCode {
             "--all" => options.all = true,
             "--keep-destination" => options.keep_destination = true,
             "--replace-destination" => options.replace_destination = true,
-            "--steam-root" | "--root" | "--candidate" | "--output" | "--plan" | "--entry"
+            "--steam-root" | "--data-dir" | "--root" | "--candidate" | "--output" | "--plan" | "--entry"
             | "--expect" | "--record" => {
                 index += 1;
                 let Some(value) = arguments.get(index) else {
@@ -128,6 +137,7 @@ fn main() -> ExitCode {
                 let original = raw[index].clone();
                 match argument {
                     "--steam-root" => options.steam_root = Some(PathBuf::from(original)),
+                    "--data-dir" => options.data_dir = Some(PathBuf::from(original)),
                     "--root" => options.roots.push(PathBuf::from(original)),
                     "--candidate" => options.candidates.push(value.clone()),
                     "--output" => options.output = Some(PathBuf::from(original)),
@@ -188,6 +198,14 @@ fn main() -> ExitCode {
                 ))
             }
         },
+        "backup" => match positional.get(1) {
+            Some(reference) => commands::backup(&options, reference),
+            None => {
+                return usage_error(
+                    "`backup` needs a library. Run `librarybridge scan` to see the list.",
+                )
+            }
+        },
         "help" => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -210,7 +228,7 @@ fn main() -> ExitCode {
 
 /// Flags each command accepts, beyond the ones every command takes.
 fn misplaced_flags(positional: &[String], arguments: &[String]) -> Option<String> {
-    const EVERYWHERE: [&str; 4] = ["--json", "-n", "--dry-run", "--steam-root"];
+    const EVERYWHERE: [&str; 5] = ["--json", "-n", "--dry-run", "--steam-root", "--data-dir"];
     let command = positional.first().map(String::as_str)?;
     let sub = positional.get(1).map(String::as_str).unwrap_or("");
 
@@ -225,6 +243,7 @@ fn misplaced_flags(positional: &[String], arguments: &[String]) -> Option<String
             "--replace-destination",
         ],
         ("undo", _) => &["-y", "--yes"],
+        ("backup", _) => &["-y", "--yes"],
         ("evidence", _) => &["--record"],
         ("lutris", "scan") => &["--root", "--all"],
         ("lutris", "detect") => &[],

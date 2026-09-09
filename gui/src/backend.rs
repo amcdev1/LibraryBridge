@@ -25,6 +25,16 @@ pub fn binary() -> PathBuf {
     PathBuf::from("librarybridge")
 }
 
+/// Arguments that pin where relocated Proton data lives. Empty when the user
+/// left the default. Everything that talks to the tool takes these.
+fn data_dir_args(data_dir: &str) -> Vec<String> {
+    if data_dir.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec!["--data-dir".to_string(), data_dir.to_string()]
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Library {
     pub id: String,
@@ -60,7 +70,6 @@ impl Library {
             _ => "Needs attention",
         }
     }
-
 }
 
 #[derive(Debug, Clone, Default)]
@@ -94,9 +103,11 @@ fn text(value: &Value, key: &str) -> String {
 
 /// Run the tool and capture its output. Errors carry the tool's own stderr,
 /// which is already written for a person to read.
-pub fn run(arguments: &[String]) -> Result<String, String> {
+pub fn run(arguments: &[String], data_dir: &str) -> Result<String, String> {
+    let mut full = data_dir_args(data_dir);
+    full.extend(arguments.iter().cloned());
     let output = Command::new(binary())
-        .args(arguments)
+        .args(&full)
         .output()
         .map_err(|e| format!("could not run {}: {e}", binary().display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -126,8 +137,8 @@ pub struct Scan {
 /// The output schema this window knows how to read.
 const SCHEMA: u64 = 1;
 
-pub fn libraries() -> Result<Scan, String> {
-    let text_out = run(&["scan".into(), "--json".into()])?;
+pub fn libraries(data_dir: &str) -> Result<Scan, String> {
+    let text_out = run(&["scan".into(), "--json".into()], data_dir)?;
     let parsed: Value = serde_json::from_str(&text_out).map_err(|e| e.to_string())?;
 
     // Two binaries that ship together can still be mismatched by a partial
@@ -195,72 +206,9 @@ pub fn libraries() -> Result<Scan, String> {
     })
 }
 
-pub fn candidates(roots: &[String], include_known: bool) -> Result<Vec<Candidate>, String> {
-    let mut arguments = vec![
-        "lutris".to_string(),
-        "scan".to_string(),
-        "--json".to_string(),
-    ];
-    if include_known {
-        arguments.push("--all".to_string());
-    }
-    for root in roots {
-        arguments.push("--root".to_string());
-        arguments.push(root.clone());
-    }
-    let text_out = run(&arguments)?;
-    let parsed: Value = serde_json::from_str(&text_out).map_err(|e| e.to_string())?;
-    let rows = parsed
-        .get("candidates")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    Ok(rows
-        .iter()
-        .map(|row| Candidate {
-            id: text(row, "id"),
-            name: text(row, "name"),
-            runner: text(row, "runner"),
-            source: text(row, "source"),
-            exe: text(row, "exe"),
-            appid: text(row, "appid"),
-            prefix: text(row, "prefix"),
-            working_dir: text(row, "working_dir"),
-            confidence: text(row, "confidence"),
-            in_lutris: row
-                .get("in_lutris")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            eligible: row.get("eligible").and_then(Value::as_bool).unwrap_or(true),
-            blocking_reason: text(row, "blocking_reason"),
-            filesystem_warning: text(row, "filesystem_warning"),
-            alternatives: row
-                .get("alternatives")
-                .and_then(Value::as_array)
-                .map(|list| {
-                    list.iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default(),
-            reasons: row
-                .get("reasons")
-                .and_then(Value::as_array)
-                .map(|list| {
-                    list.iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default(),
-        })
-        .collect())
-}
-
 /// Whether Lutris is installed, and the one-line summary to show if it is.
-pub fn lutris_status() -> Result<String, String> {
-    run(&["lutris".into(), "detect".into()])
+pub fn lutris_status(data_dir: &str) -> Result<String, String> {
+    run(&["lutris".into(), "detect".into()], data_dir)
 }
 
 // ---------------------------------------------------------------- background
@@ -332,6 +280,8 @@ pub enum Update {
     Line(String),
     /// A phase change or progress report from a running command.
     Event(Phase),
+    /// Progress of a Lutris folder scan: folders done of total.
+    Scanning((usize, usize)),
     /// A command finished. The bool says whether it succeeded.
     Done(bool),
 }
@@ -345,9 +295,16 @@ where
 
 /// Run a command, sending each line of output as it appears so the window can
 /// show progress rather than freezing until the copy finishes.
-pub fn stream(sender: &Sender<Update>, arguments: &[String], running: &Running) {
+pub fn stream(
+    sender: &Sender<Update>,
+    arguments: &[String],
+    running: &Running,
+    data_dir: &str,
+) {
+    let mut full = data_dir_args(data_dir);
+    full.extend(arguments.iter().cloned());
     let mut child = match Command::new(binary())
-        .args(arguments)
+        .args(&full)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -410,6 +367,141 @@ pub fn stream(sender: &Sender<Update>, arguments: &[String], running: &Running) 
     let _ = sender.send(Update::Done(ok));
 }
 
+/// Stream `lutris scan --json`'s output lines, forwarding `scanning` progress
+/// events as they arrive and delivering the final JSON document as a
+/// `Candidates` update followed by `Done`.
+///
+/// The window uses this instead of the blocking path so adding a folder with
+/// many games shows a spinner and a percent rather than a frozen screen. The
+/// scan always asks for `--all` so every candidate carries its real
+/// `in_lutris` flag -- the window filters, the tool never hides.
+///
+/// Unlike `stream`, the child is kept locally for the final `wait`: the shared
+/// `running` slot is a single bucket and a second scan (e.g. the one launched
+/// after an import) would overwrite it, making this scan wait on the wrong
+/// process and report "scan did not finish" even though it succeeded.
+pub fn stream_candidates(sender: &Sender<Update>, roots: &[String], data_dir: &str) {
+    let mut arguments = vec![
+        "lutris".to_string(),
+        "scan".to_string(),
+        "--json".to_string(),
+    ];
+    arguments.push("--all".to_string());
+    for root in roots {
+        arguments.push("--root".to_string());
+        arguments.push(root.clone());
+    }
+    let mut full = data_dir_args(data_dir);
+    full.extend(arguments);
+
+    let mut child = match Command::new(binary())
+        .args(&full)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = sender.send(Update::Candidates(Err(format!(
+                "could not run {}: {error}",
+                binary().display()
+            ))));
+            let _ = sender.send(Update::Done(false));
+            return;
+        }
+    };
+
+    // The scan runs on the games screen, where there is no Stop button, so the
+    // window never needs a handle to it. Keep the child fully local and wait
+    // on it below; putting it in the shared `running` slot would let a second
+    // scan overwrite it and make this scan wait on the wrong process.
+    let stderr = child.stderr.take();
+    let stdout = child.stdout.take();
+
+    let mut last_document = String::new();
+    if let Some(stdout) = stdout {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if line.starts_with("{\"event\": \"scanning\"") {
+                if let Some((done, total)) = scan_progress(&line) {
+                    let _ = sender.send(Update::Scanning((done, total)));
+                    continue;
+                }
+            }
+            // A progress line is followed by the JSON document. Everything
+            // that is not a progress line is part of the document.
+            last_document = format!("{last_document}\n{line}");
+        }
+    }
+    if let Some(stderr) = stderr {
+        // Drain so a child that writes a lot to stderr cannot block on a full
+        // pipe while we wait for it below.
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = line;
+        }
+    }
+
+    // Wait on the child we spawned, not whatever is in the shared slot now.
+    let ok = child
+        .wait()
+        .map(|status| status.success())
+        .ok()
+        .unwrap_or(false);
+
+    if ok {
+        let parsed: Option<serde_json::Value> = serde_json::from_str(&last_document).ok();
+        let rows = match parsed {
+            Some(parsed) => parsed
+                .get("candidates")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let list = rows
+            .iter()
+            .map(|row| Candidate {
+                id: text(row, "id"),
+                name: text(row, "name"),
+                runner: text(row, "runner"),
+                source: text(row, "source"),
+                exe: text(row, "exe"),
+                appid: text(row, "appid"),
+                prefix: text(row, "prefix"),
+                working_dir: text(row, "working_dir"),
+                confidence: text(row, "confidence"),
+                in_lutris: row
+                    .get("in_lutris")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                eligible: row.get("eligible").and_then(Value::as_bool).unwrap_or(true),
+                blocking_reason: text(row, "blocking_reason"),
+                filesystem_warning: text(row, "filesystem_warning"),
+                alternatives: strings(row, "alternatives"),
+                reasons: strings(row, "reasons"),
+            })
+            .collect();
+        let _ = sender.send(Update::Candidates(Ok(list)));
+    } else {
+        let _ = sender.send(Update::Candidates(Err("scan did not finish".to_string())));
+    }
+    let _ = sender.send(Update::Done(ok));
+}
+
+/// Parse a `scanning` progress line into (done, total). Returns None for
+/// anything that is not one.
+fn scan_progress(line: &str) -> Option<(usize, usize)> {
+    if !line.starts_with("{\"event\": \"scanning\"") {
+        return None;
+    }
+    let value: Value = serde_json::from_str(line).ok()?;
+    let done = value.get("done").and_then(Value::as_u64);
+    let total = value.get("total").and_then(Value::as_u64);
+    match (done, total) {
+        (Some(d), Some(t)) => Some((d as usize, t as usize)),
+        _ => None,
+    }
+}
+
 /// The reviewed plan, as the tool reports it. The window renders these fields
 /// rather than reading them back out of prose.
 #[derive(Debug, Clone, Default)]
@@ -436,13 +528,16 @@ fn strings(value: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn plan(library_id: &str) -> Result<Plan, String> {
-    let out = run(&[
-        "fix".into(),
-        library_id.into(),
-        "--dry-run".into(),
-        "--json".into(),
-    ])?;
+pub fn plan(library_id: &str, data_dir: &str) -> Result<Plan, String> {
+    let out = run(
+        &[
+            "fix".into(),
+            library_id.into(),
+            "--dry-run".into(),
+            "--json".into(),
+        ],
+        data_dir,
+    )?;
     let parsed: Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
     let count = |key: &str| parsed.get(key).and_then(Value::as_u64);
     Ok(Plan {
@@ -461,7 +556,8 @@ pub fn plan(library_id: &str) -> Result<Plan, String> {
     })
 }
 
-/// What is kept on disk for one library.
+/// What is kept on disk for one library, plus how much room the destination
+/// filesystem has right now.
 #[derive(Debug, Clone, Default)]
 pub struct Stored {
     pub id: String,
@@ -469,10 +565,14 @@ pub struct Stored {
     pub live: Option<(String, u64)>,
     pub backups: Vec<(String, u64)>,
     pub leftover: Option<(String, u64)>,
+    /// Free bytes where the moved copies live. `None` when it cannot be read.
+    pub data_free_bytes: Option<u64>,
+    /// The destination root for the moved copies.
+    pub data_root: String,
 }
 
-pub fn storage() -> Result<Vec<Stored>, String> {
-    let out = run(&["storage".into(), "--json".into()])?;
+pub fn storage(data_dir: &str) -> Result<Vec<Stored>, String> {
+    let out = run(&["storage".into(), "--json".into()], data_dir)?;
     let parsed: Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
     let entry = |value: Option<&Value>| {
         value.and_then(|item| {
@@ -482,6 +582,12 @@ pub fn storage() -> Result<Vec<Stored>, String> {
             ))
         })
     };
+    let data_root = parsed
+        .get("data_root")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let data_free_bytes = parsed.get("data_free_bytes").and_then(Value::as_u64);
     Ok(parsed
         .get("libraries")
         .and_then(Value::as_array)
@@ -498,6 +604,8 @@ pub fn storage() -> Result<Vec<Stored>, String> {
                 .map(|list| list.iter().filter_map(|item| entry(Some(item))).collect())
                 .unwrap_or_default(),
             leftover: entry(row.get("leftover")),
+            data_free_bytes,
+            data_root: data_root.clone(),
         })
         .collect())
 }
@@ -525,8 +633,11 @@ pub struct EvidenceRow {
     pub by_tool: bool,
 }
 
-pub fn evidence(library_id: &str) -> Result<Vec<EvidenceRow>, String> {
-    let out = run(&["evidence".into(), library_id.into(), "--json".into()])?;
+pub fn evidence(library_id: &str, data_dir: &str) -> Result<Vec<EvidenceRow>, String> {
+    let out = run(
+        &["evidence".into(), library_id.into(), "--json".into()],
+        data_dir,
+    )?;
     let parsed: Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
     Ok(parsed
         .get("evidence")
@@ -542,13 +653,21 @@ pub fn evidence(library_id: &str) -> Result<Vec<EvidenceRow>, String> {
         .collect())
 }
 
-pub fn record_evidence(library_id: &str, field: &str, answer: &str) -> Result<(), String> {
-    run(&[
-        "evidence".into(),
-        library_id.into(),
-        "--record".into(),
-        format!("{field}={answer}"),
-    ])
+pub fn record_evidence(
+    library_id: &str,
+    field: &str,
+    answer: &str,
+    data_dir: &str,
+) -> Result<(), String> {
+    run(
+        &[
+            "evidence".into(),
+            library_id.into(),
+            "--record".into(),
+            format!("{field}={answer}"),
+        ],
+        data_dir,
+    )
     .map(|_| ())
 }
 

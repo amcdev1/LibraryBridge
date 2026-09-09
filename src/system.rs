@@ -43,7 +43,7 @@ fn classify(fs_type: &str) -> Capability {
     match fs_type {
         "ext2" | "ext3" | "ext4" | "btrfs" | "xfs" | "f2fs" | "zfs" | "bcachefs" | "reiserfs"
         | "jfs" | "nilfs2" | "overlay" | "apfs" | "hfs" => Capability::Native,
-        "ntfs" | "ntfs3" => Capability::NeedsRepair,
+        "ntfs" | "ntfs3" | "ntfs-3g" => Capability::NeedsRepair,
         "exfat" | "vfat" | "msdos" | "fat" | "fat32" | "iso9660" | "udf" => Capability::NoSymlinks,
         _ => Capability::Unknown,
     }
@@ -72,7 +72,22 @@ pub fn mount_for(path: &Path) -> Option<Mount> {
             best = Some(parsed);
         }
     }
-    best
+    if let Some(mount) = best {
+        // udisks2 mounts ntfs-3g and exfat-fuse with a plain device node as
+        // the source, which says nothing about what is down there. Ask the
+        // device what it is. The parser cannot, which is why this lives here.
+        if mount.fs_type == "fuseblk" && mount.capability == Capability::Unknown {
+            if let Some(name) = identify_fuseblk(Path::new(&mount.source)) {
+                let mut identified = mount.clone();
+                identified.capability = classify(&name);
+                identified.fs_type = name;
+                return Some(identified);
+            }
+        }
+        Some(mount)
+    } else {
+        None
+    }
 }
 
 /// mountinfo lines look like:
@@ -97,23 +112,20 @@ fn parse_mountinfo_line(line: &str) -> Option<Mount> {
     // A FUSE filesystem on a block device reports `fuseblk` and says nothing
     // about what is actually down there. ntfs-3g and exfat-fuse look the same
     // from here, and treating them alike would offer an exFAT volume a repair
-    // that cannot work. Only a mount whose source names NTFS is taken as NTFS;
-    // anything else stays unidentified, which blocks rather than guesses.
+    // that cannot work. Only a mount whose source names NTFS is taken as NTFS
+    // here; anything else stays unidentified, and `mount_for` asks the device
+    // itself before acting on it.
     let fs_type = if fs_type == "fuseblk" {
         let hint = source.to_lowercase();
         if hint.contains("ntfs") {
             "ntfs-3g".to_string()
         } else {
-            format!("fuseblk ({source})")
+            "fuseblk".to_string()
         }
     } else {
         fs_type
     };
-    let capability = if fs_type == "ntfs-3g" {
-        Capability::NeedsRepair
-    } else {
-        classify(&fs_type)
-    };
+    let capability = classify(&fs_type);
 
     Some(Mount {
         mount_point: PathBuf::from(mount_point),
@@ -122,6 +134,30 @@ fn parse_mountinfo_line(line: &str) -> Option<Mount> {
         read_only,
         capability,
     })
+}
+
+/// What is beneath a FUSE filesystem mounted from a block device.
+///
+/// ntfs-3g and exfat-fuse both report `fuseblk` with a plain device node as
+/// the source, so the mount table cannot tell them apart. The device itself
+/// can. Returns a filesystem type name the classifier understands, or nothing
+/// when the device cannot be asked.
+fn identify_fuseblk(device: &Path) -> Option<String> {
+    let output = Command::new("lsblk").args(["-no", "FSTYPE"]).arg(device).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    fuseblk_type_from_lsblk(text.trim())
+}
+
+/// The part of `identify_fuseblk` that does not touch the system.
+fn fuseblk_type_from_lsblk(output: &str) -> Option<String> {
+    match output.trim() {
+        "" => None,
+        "ntfs" => Some("ntfs-3g".to_string()),
+        other => Some(str::to_string(other)),
+    }
 }
 
 fn unescape_octal(input: &str) -> String {
@@ -237,11 +273,20 @@ mod tests {
         assert_eq!(mount.capability, Capability::NeedsRepair);
         assert_eq!(mount.fs_type, "ntfs-3g");
 
-        // Anything else on the same driver could be exfat-fuse, which cannot
-        // hold a symlink. Guessing NTFS here would offer a doomed repair.
+        // Any other source could be exfat-fuse, which cannot hold a symlink.
+        // The parser leaves this unidentified; `mount_for` asks the device
+        // itself, because a plain device node does not say what is down there.
         let line = "40 35 0:45 / /mnt/games rw,relatime - fuseblk /dev/sdb1 rw,user_id=0";
         let mount = parse_mountinfo_line(line).unwrap();
         assert_eq!(mount.capability, Capability::Unknown);
+    }
+
+    #[test]
+    fn maps_what_lsblk_reports_for_a_fuse_device() {
+        assert_eq!(fuseblk_type_from_lsblk("ntfs\n"), Some("ntfs-3g".to_string()));
+        assert_eq!(fuseblk_type_from_lsblk("exfat\n"), Some("exfat".to_string()));
+        assert_eq!(fuseblk_type_from_lsblk(""), None);
+        assert_eq!(fuseblk_type_from_lsblk("   \n"), None);
     }
 
     #[test]

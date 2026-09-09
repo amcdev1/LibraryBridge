@@ -21,6 +21,10 @@ const GROWTH_RESERVE: u64 = 2 * 1024 * 1024 * 1024;
 
 pub struct Options {
     pub steam_root: Option<PathBuf>,
+    /// Where relocated compatdata should live instead of the default data
+    /// home. Must be a Linux filesystem for the same reason the moved data
+    /// cannot stay where it was.
+    pub data_dir: Option<PathBuf>,
     pub json: bool,
     pub dry_run: bool,
     pub force: bool,
@@ -49,7 +53,7 @@ pub struct Options {
 // ---------------------------------------------------------------- scan
 
 pub fn scan(options: &Options) -> Result<i32, String> {
-    let (libraries, warnings) = steam::all_libraries(options.steam_root.as_deref());
+    let (libraries, warnings) = steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
 
     if options.json {
         print!("{}", scan_json(&libraries, &warnings));
@@ -339,7 +343,7 @@ fn scan_json(libraries: &[Library], warnings: &[String]) -> String {
     out
 }
 
-fn json_string(value: &str) -> String {
+pub fn json_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
     for c in value.chars() {
@@ -389,7 +393,7 @@ fn number(value: u64) -> String {
 /// nothing about whether a game runs, and the two are kept apart here so a
 /// completed repair never reads as a working game.
 pub fn evidence(options: &Options, reference: &str) -> Result<i32, String> {
-    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref());
+    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
     let library = steam::resolve(&libraries, reference)?;
 
     if let Some(pair) = &options.record {
@@ -459,8 +463,17 @@ pub fn evidence(options: &Options, reference: &str) -> Result<i32, String> {
 /// walking every backup on a slow external drive is not something a listing
 /// should do.
 pub fn storage(options: &Options) -> Result<i32, String> {
-    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref());
+    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
     let mut rows = Vec::new();
+
+    // Where the copies live. `storage` exists to say how much headroom is
+    // left there, not just how much was moved. The first library names the
+    // volume; a `--data-dir` choice or the default both fall out of that.
+    let data_root = libraries
+        .first()
+        .map(|library| library.target_root())
+        .unwrap_or_else(state::app_data_dir);
+    let data_free = system::free_bytes(&data_root);
 
     for library in &libraries {
         let report = state::inspect(library);
@@ -492,7 +505,15 @@ pub fn storage(options: &Options) -> Result<i32, String> {
     }
 
     if options.json {
-        let mut out = String::from("{\n  \"schema\": 1,\n  \"libraries\": [\n");
+        let mut out = String::from("{\n  \"schema\": 1,\n");
+        let free_json = match data_free {
+            Some(bytes) => format!("\"data_free_bytes\": {bytes},"),
+            None => "\"data_free_bytes\": null,".to_string(),
+        };
+        out.push_str(&format!(
+            "  {free_json}\n  \"data_root\": {},\n  \"libraries\": [\n",
+            json_string(&data_root.to_string_lossy())
+        ));
         let entry = |path: &Path, bytes: u64| {
             format!(
                 "{{\"path\": {}, \"bytes\": {bytes}}}",
@@ -529,6 +550,13 @@ pub fn storage(options: &Options) -> Result<i32, String> {
 
     if rows.is_empty() {
         println!("Nothing stored by LibraryBridge yet.");
+        if let Some(free) = data_free {
+            println!(
+                "The copies live at {}, with {} free right now.",
+                data_root.display(),
+                human_bytes(free)
+            );
+        }
         return Ok(0);
     }
 
@@ -536,7 +564,11 @@ pub fn storage(options: &Options) -> Result<i32, String> {
         println!();
         println!("  [{}] {}", library.id, library.display_name());
         if let Some((path, bytes)) = live {
-            println!("      live        {} ({})", path.display(), human_bytes(*bytes));
+            println!(
+                "      live        {} ({})",
+                path.display(),
+                human_bytes(*bytes)
+            );
         }
         for (path, bytes) in backups {
             println!("      original    {} ({})", path.display(), human_bytes(*bytes));
@@ -552,13 +584,31 @@ pub fn storage(options: &Options) -> Result<i32, String> {
     println!();
     println!("Originals are kept on purpose. Delete one yourself once a game has launched");
     println!("and loaded a save from the live copy. LibraryBridge will not delete them.");
+    if let Some(free) = data_free {
+        let used_at = human_bytes(fsops::tree_size(&data_root).unwrap_or(0));
+        let free_at = human_bytes(free);
+        println!();
+        println!(
+            "The copies live at {} and take {}; {} is free there right now.",
+            data_root.display(),
+            used_at,
+            free_at
+        );
+        if free < GROWTH_RESERVE {
+            println!(
+                "That is low headroom. A large prefix could push it past comfortable. \
+                 Consider deleting originals with `librarybridge backup <library>` once \
+                 they are confirmed working."
+            );
+        }
+    }
     Ok(0)
 }
 
 // ---------------------------------------------------------------- fix
 
 pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
-    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref());
+    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
     let library = steam::resolve(&libraries, reference)?;
 
     // Held until this function returns, so a second process cannot act on a
@@ -1164,10 +1214,143 @@ fn link_and_check(target: &Path, link_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------- backup
+
+/// Remove the original that a completed repair kept beside the library.
+///
+/// The only thing this tool ever deletes, and it is gated hard because it is
+/// the one branch that gives back the space a repair consumed:
+///
+///  1. the library must be genuinely repaired (a live symlink to a target we
+///     own),
+///  2. a person must have recorded that a game launched and loaded a save,
+///  3. the moved copy must still match the original it will leave behind.
+///
+/// The last check is what makes the deletion more than a guess. It re-reads
+/// the current copy and the backup and refuses on the first difference, so a
+/// game that has written new data since the repair (or a repair that silently
+/// lost something) prevents the delete rather than losing the only copy.
+///
+/// Nothing inside the moved copy is ever touched, and the deletion is as
+/// durable as everything else: the backup is removed only after the copy has
+/// been shown to be identical.
+pub fn backup(options: &Options, reference: &str) -> Result<i32, String> {
+    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
+    let library = steam::resolve(&libraries, reference)?;
+
+    // A dry run reads no lock, exactly like every other command. Deleting is
+    // a mutation; reading is not.
+    let _lock = if options.dry_run {
+        None
+    } else {
+        Some(lock::Lock::acquire(&library.id)?)
+    };
+
+    let report = state::inspect(library);
+    let target = match &report.state {
+        State::Repaired { target, .. } => target.clone(),
+        other => {
+            return Err(format!(
+                "{}: cannot delete a backup for this library because it is '{}'. \
+                 Nothing was changed.",
+                library.path.display(),
+                other.headline()
+            ))
+        }
+    };
+
+    if report.backups.is_empty() {
+        println!("No original kept for this library. Nothing to delete.");
+        return Ok(0);
+    }
+
+    // The gate is the person's proof that a game works from the moved copy.
+    // Without it this is exactly the "kept on purpose" case the tool was built
+    // to preserve.
+    let recorded = evidence::Evidence::load(&library.id);
+    let launch = matches!(recorded.launch.result, evidence::Result_::Worked);
+    let save = matches!(recorded.save.result, evidence::Result_::Worked);
+    if !launch || !save {
+        return Err(format!(
+            "{}: the backup exists as insurance, and there is no evidence yet that the moved \
+             copy works. Answer these first (a repair cannot know the answers):\n\
+             \x20    librarybridge evidence {} --record launch=yes\n\
+             \x20    librarybridge evidence {} --record save=yes\n\
+             Nothing was changed.",
+            library.path.display(),
+            library.id,
+            library.id
+        ));
+    }
+
+    let backup = report.backups.first().unwrap();
+    let backup_bytes = fsops::tree_size(backup).unwrap_or(0);
+
+    // Re-verify before touching anything: the moved copy is not the same tree
+    // it was at repair time. If a game has added data since, the copy is
+    // newer than the backup and the backup's only purpose is already over.
+    // If it differs the other way, something is wrong and the backup stays.
+    let mut equal = false;
+    if report.backups.len() == 1 {
+        equal = same_data(backup, &target)?;
+    }
+    let ready = equal && backup_bytes > 0;
+
+    if options.dry_run {
+        // The dry run says exactly what is true, including when the deletion
+        // would be refused, so the user can see the gate before anything runs.
+        if !ready {
+            return Err(format!(
+                "the moved copy {} does not match the original at {}. This would NOT be \
+                 deleted. Keep the backup.",
+                target.display(),
+                backup.display()
+            ));
+        }
+        println!("Library     {}", library.path.display());
+        println!("Name        {}", library.display_name());
+        println!(
+            "Original    {} ({})",
+            backup.display(),
+            human_bytes(backup_bytes)
+        );
+        println!("Copy        {}", target.display());
+        println!(
+            "Would delete the original above. The moved copy is identical and has been \
+             verified."
+        );
+        println!("Dry run. Nothing was deleted.");
+        return Ok(0);
+    }
+
+    if !ready {
+        return Err(format!(
+            "the moved copy {} does not match the original at {}. The original is kept, nothing \
+             was deleted.",
+            target.display(),
+            backup.display()
+        ));
+    }
+
+    // Everything that could leave a person with no copy has been checked. The
+    // removal itself is one operation, not two, so a crash cannot leave the
+    // backup half-deleted.
+    fs::remove_dir_all(backup).map_err(|e| format!("{}: {e}", backup.display()))?;
+
+    // The evidence still stands, but the file the backup represented is now
+    // gone, so the durable note is removed with it.
+    record::Record::clear(&library.id);
+
+    println!("Deleted.");
+    println!("  Original    {}", backup.display());
+    println!("  Reclaimed   {}", human_bytes(backup_bytes));
+    Ok(0)
+}
+
 // ---------------------------------------------------------------- undo
 
 pub fn undo(options: &Options, reference: &str) -> Result<i32, String> {
-    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref());
+    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
     let library = steam::resolve(&libraries, reference)?;
     let _lock = if options.dry_run {
         None

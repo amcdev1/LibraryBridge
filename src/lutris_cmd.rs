@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use crate::commands::Options;
+use crate::commands::{json_string, Options};
 use crate::discover::{self, Candidate, Confidence};
 use crate::json::{self, Json};
 use crate::lutris::{self, Installation};
@@ -25,6 +25,12 @@ pub fn dispatch(options: &Options, arguments: &[String]) -> Result<i32, String> 
         None => Err("lutris needs a command: detect, scan, plan, import or forget.".to_string()),
     }
 }
+
+/// How long to keep waiting for a Lutris install dialog to write its config.
+/// `lutris --install` returns as soon as the window opens, so without a wait
+/// a game that the user is still confirming would be reported as skipped.
+/// The wait ends the moment the entry appears; this is only the upper bound.
+const ADMIN_POLL_SECS: u64 = 120;
 
 fn state_dir() -> PathBuf {
     crate::state::app_data_dir().join("lutris")
@@ -107,7 +113,27 @@ fn scan(options: &Options) -> Result<i32, String> {
         );
     }
 
-    let candidates = discover::scan(&options.roots, options.steam_root.as_deref(), &existing);
+    // Machine output reports progress on stdout as JSON lines, exactly like
+    // `fix` and `undo`, so a caller (the window) can show how much is left.
+    // The final document is still the only thing that ever follows, so a
+    // script that ignores these lines is unaffected.
+    let scanning = !options.roots.is_empty();
+    let progress = move |done: usize, total: usize| {
+        if options.json && scanning {
+            emit_scan(
+                options,
+                "scanning",
+                &[("done", done.to_string()), ("total", total.to_string())],
+            );
+        }
+    };
+    let candidates = discover::scan(
+        &options.roots,
+        options.steam_root.as_deref(),
+        &existing,
+        progress,
+    );
+
     let shown: Vec<&Candidate> = if options.all {
         candidates.iter().collect()
     } else {
@@ -183,6 +209,21 @@ fn scan(options: &Options) -> Result<i32, String> {
     );
     println!("    librarybridge lutris import --plan plan.json");
     Ok(0)
+}
+
+/// A progress line for machine output, in the same shape `fix` uses. Emitted
+/// to stdout; the final JSON document follows and is the only thing a caller
+/// that ignores these lines will ever see.
+fn emit_scan(options: &Options, event: &str, fields: &[(&str, String)]) {
+    if !options.json {
+        return;
+    }
+    let mut line = format!("{{\"event\": {}", json_string(event));
+    for (key, value) in fields {
+        line.push_str(&format!(", {}: {value}", json_string(key)));
+    }
+    line.push('}');
+    println!("{line}");
 }
 
 fn scan_json(candidates: &[&Candidate]) -> String {
@@ -292,7 +333,12 @@ fn plan(options: &Options) -> Result<i32, String> {
         .iter()
         .flat_map(lutris::existing_entries)
         .collect();
-    let candidates = discover::scan(&options.roots, options.steam_root.as_deref(), &existing);
+    let candidates = discover::scan(
+        &options.roots,
+        options.steam_root.as_deref(),
+        &existing,
+        move |_, _| (),
+    );
 
     let mut chosen = Vec::new();
     for wanted in &options.candidates {
@@ -468,10 +514,18 @@ fn import(options: &Options) -> Result<i32, String> {
             .map_err(|e| format!("{}: {e}", yaml_path.display()))?;
 
         println!("  {name}");
-        match lutris::install(&installation, &yaml_path) {
-            Ok(()) => {}
+        let exit = lutris::install(&installation, &yaml_path);
+        match exit {
+            Ok(code) if code != 0 => {
+                println!(
+                    "    Lutris exited with status {code} (its install dialog may have been cancelled)"
+                );
+                // Continue: a non-zero exit is not proof nothing was added.
+                // The config check below is the real test.
+            }
+            Ok(_) => {}
             Err(message) => {
-                println!("    Lutris reported: {message}");
+                println!("    could not run Lutris: {message}");
                 skipped += 1;
                 continue;
             }
@@ -489,8 +543,50 @@ fn import(options: &Options) -> Result<i32, String> {
                 imported += 1;
             }
             None => {
-                println!("    Lutris did not report a new entry. Nothing was recorded.");
-                skipped += 1;
+                // `lutris --install` returns as soon as the install window is
+                // shown, not when it closes. The config is written when the
+                // user finishes the dialog, so wait for it before concluding
+                // the import failed. This is what makes the window say
+                // "stopped without finishing" when the game actually got
+                // added.
+                let deadline = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+                    + ADMIN_POLL_SECS;
+                let mut landed = None;
+                println!("    Waiting for you to finish the Lutris dialog…");
+                while std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+                    < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let latest = lutris::existing_entries(&installation);
+                    if let Some(entry) = latest.iter().find(|e| {
+                        !before.iter().any(|b| b.config == e.config)
+                            && (e.slug.starts_with(&slug) || e.exe == exe)
+                    }) {
+                        landed = Some(entry.clone());
+                        break;
+                    }
+                }
+                match landed {
+                    Some(entry) => {
+                        record_provenance(&definition, &entry)?;
+                        println!("    added, config at {}", entry.config.display());
+                        imported += 1;
+                    }
+                    None => {
+                        println!(
+                            "    Lutris did not report a new entry within {}s. Check Lutris \
+                             manually.",
+                            ADMIN_POLL_SECS
+                        );
+                        skipped += 1;
+                    }
+                }
             }
         }
     }
@@ -498,6 +594,9 @@ fn import(options: &Options) -> Result<i32, String> {
     println!();
     println!("{imported} added, {skipped} skipped.");
     println!("No game files or prefixes were changed.");
+    // Part of the job succeeded: that is a success for the caller even if some
+    // games had to be skipped. Only report failure when nothing was added at
+    // all.
     Ok(if imported == 0 && skipped > 0 { 2 } else { 0 })
 }
 

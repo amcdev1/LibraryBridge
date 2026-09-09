@@ -41,6 +41,10 @@ pub struct Library {
     pub install_kind: InstallKind,
     pub install_root: PathBuf,
     pub connected: bool,
+    /// Where this library's relocated data lives, when the user chose a
+    /// non-default location with `--data-dir`. `None` means the default:
+    /// a `librarybridge` directory under the user's data home.
+    pub data_root: Option<PathBuf>,
 }
 
 impl Library {
@@ -57,15 +61,20 @@ impl Library {
 
     /// Where this installation's relocated data lives.
     ///
-    /// For Flatpak Steam this sits inside Steam's own data directory. That
-    /// area is already visible to the sandbox, so the repair never has to ask
-    /// for a new Flatpak permission.
+    /// For Flatpak Steam the default sits inside Steam's own data directory.
+    /// That area is already visible to the sandbox, so the repair never has to
+    /// ask for a new Flatpak permission. A `--data-dir` choice overrides it;
+    /// the user is responsible for making that location reachable from the
+    /// Steam they use.
     pub fn target_root(&self) -> PathBuf {
-        match self.install_kind {
-            InstallKind::Flatpak => flatpak_data_root(&self.install_root)
-                .unwrap_or_else(native_data_root)
-                .join("librarybridge"),
-            InstallKind::Native => native_data_root().join("librarybridge"),
+        match &self.data_root {
+            Some(chosen) => chosen.clone(),
+            None => match self.install_kind {
+                InstallKind::Flatpak => flatpak_data_root(&self.install_root)
+                    .unwrap_or_else(native_data_root)
+                    .join("librarybridge"),
+                InstallKind::Native => native_data_root().join("librarybridge"),
+            },
         }
     }
 
@@ -253,7 +262,7 @@ fn looks_like_steam(path: &Path) -> bool {
 
 /// Libraries belonging to an installation, including the installation's own.
 /// Missing folders stay in the list, marked as not connected.
-pub fn libraries(install: &Install) -> (Vec<Library>, Vec<String>) {
+pub fn libraries(install: &Install, data_root: Option<&Path>) -> (Vec<Library>, Vec<String>) {
     let mut warnings = Vec::new();
     let mut paths: Vec<(PathBuf, String)> = vec![(install.root.clone(), String::new())];
 
@@ -330,17 +339,22 @@ pub fn libraries(install: &Install) -> (Vec<Library>, Vec<String>) {
             install_kind: install.kind,
             install_root: install.root.clone(),
             connected,
+            data_root: data_root.map(|path| path.to_path_buf()),
         });
     }
     (libraries, warnings)
 }
 
-/// Every library across every installation, keyed by id.
-pub fn all_libraries(override_root: Option<&Path>) -> (Vec<Library>, Vec<String>) {
+/// Every library across every installation, keyed by id. `data_root`, when
+/// some, is where relocated compatdata should live instead of the default.
+pub fn all_libraries(
+    override_root: Option<&Path>,
+    data_root: Option<&Path>,
+) -> (Vec<Library>, Vec<String>) {
     let mut all: BTreeMap<String, Library> = BTreeMap::new();
     let mut warnings = Vec::new();
     for install in find_installs(override_root) {
-        let (libraries, mut install_warnings) = libraries(&install);
+        let (libraries, mut install_warnings) = libraries(&install, data_root);
         warnings.append(&mut install_warnings);
         for library in libraries {
             // A physical library shared between native and Flatpak Steam is

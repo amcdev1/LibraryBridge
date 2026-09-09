@@ -25,6 +25,25 @@ const APP_ICON_BYTES: &[u8] = include_bytes!(concat!(
     "/../assets/branding/librarybridge-controller-bridge-top-lb-1024.png"
 ));
 
+/// Where the window remembers a `--data-dir` choice between sessions. It lives
+/// in the default data home, not in the data directory itself, so the setting
+/// survives the location it names being on an unmounted drive.
+fn saved_data_dir_path() -> std::path::PathBuf {
+    let base = match std::env::var_os("XDG_DATA_HOME") {
+        Some(dir) if std::path::Path::new(&dir).is_absolute() => std::path::PathBuf::from(dir),
+        _ => std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+            .join(".local/share"),
+    };
+    base.join("librarybridge").join("data-dir.txt")
+}
+
+fn save_data_dir(path: &String) {
+    let file = saved_data_dir_path();
+    let parent = file.parent().unwrap_or(std::path::Path::new("/"));
+    let _ = std::fs::create_dir_all(parent);
+    let _ = std::fs::write(&file, format!("{path}\n"));
+}
+
 fn main() -> eframe::Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let value = |name: &str| -> Option<String> {
@@ -120,7 +139,10 @@ struct App {
 
     roots: Vec<String>,
     root_input: String,
-    show_known: bool,
+    /// Where relocated Proton data should live. Empty means the tool's
+    /// default under the user's data home.
+    data_dir: String,
+    data_dir_input: String,
     selected: BTreeSet<String>,
     edits: HashMap<String, Candidate>,
     expanded: BTreeSet<String>,
@@ -144,11 +166,18 @@ struct App {
     /// otherwise.
     warnings: Vec<String>,
     scan_complete: bool,
+    /// Progress of a Lutris folder scan, when one is running: (done, total).
+    /// `None` when nothing is scanning.
+    scanning: Option<(usize, usize)>,
     /// The phase a running operation is in, and the child running it, so the
     /// window knows whether stopping is safe and can actually do it.
     phase: Option<backend::Phase>,
     running: backend::Running,
     cancelled: bool,
+    /// A `lutris import` was started and its `Done` has not been handled yet.
+    /// The window re-scans the games list only for this, so a finished scan
+    /// does not immediately launch another scan (which would loop forever).
+    just_imported: bool,
     /// The library a run is about, so its evidence can be shown afterwards.
     subject: Option<String>,
     evidence: Vec<backend::EvidenceRow>,
@@ -201,7 +230,10 @@ impl App {
             lutris: None,
             roots: start.roots.clone(),
             root_input: String::new(),
-            show_known: false,
+            data_dir: std::fs::read_to_string(saved_data_dir_path())
+                .map(|text| text.trim().to_string())
+                .unwrap_or_default(),
+            data_dir_input: String::new(),
             selected: BTreeSet::new(),
             edits: HashMap::new(),
             expanded: BTreeSet::new(),
@@ -215,9 +247,11 @@ impl App {
             stored: Vec::new(),
             warnings: Vec::new(),
             scan_complete: true,
+            scanning: None,
             phase: None,
             running: backend::Running::default(),
             cancelled: false,
+            just_imported: false,
             subject: None,
             evidence: Vec::new(),
             sender,
@@ -233,8 +267,9 @@ impl App {
             app.refresh_candidates();
         }
         if matches!(app.screen, Screen::Storage) {
-            backend::spawn(app.sender.clone(), |tx| {
-                let _ = tx.send(Update::Storage(backend::storage()));
+            let data_dir = app.data_dir.clone();
+            backend::spawn(app.sender.clone(), move |tx| {
+                let _ = tx.send(Update::Storage(backend::storage(&data_dir)));
             });
         }
         if let Some(id) = start.review {
@@ -246,15 +281,17 @@ impl App {
 
     fn refresh_libraries(&mut self) {
         let sender = self.sender.clone();
-        backend::spawn(sender, |tx| {
-            let _ = tx.send(Update::Libraries(backend::libraries()));
+        let data_dir = self.data_dir.clone();
+        backend::spawn(sender, move |tx| {
+            let _ = tx.send(Update::Libraries(backend::libraries(&data_dir)));
         });
     }
 
     fn refresh_lutris(&mut self) {
         let sender = self.sender.clone();
-        backend::spawn(sender, |tx| {
-            let _ = tx.send(Update::Lutris(backend::lutris_status()));
+        let data_dir = self.data_dir.clone();
+        backend::spawn(sender, move |tx| {
+            let _ = tx.send(Update::Lutris(backend::lutris_status(&data_dir)));
         });
     }
 
@@ -320,10 +357,11 @@ impl App {
 
     fn refresh_candidates(&mut self) {
         let roots = self.roots.clone();
-        let include = self.show_known;
+        let data_dir = self.data_dir.clone();
         let sender = self.sender.clone();
+        self.scanning = Some((0, self.roots.len()));
         backend::spawn(sender, move |tx| {
-            let _ = tx.send(Update::Candidates(backend::candidates(&roots, include)));
+            backend::stream_candidates(&tx, &roots, &data_dir);
         });
     }
 
@@ -340,8 +378,9 @@ impl App {
         // tool's own words under Details.
         if action == Action::Fix {
             let library = id.to_string();
+            let data_dir = self.data_dir.clone();
             backend::spawn(self.sender.clone(), move |tx| {
-                let _ = tx.send(Update::Plan(backend::plan(&library)));
+                let _ = tx.send(Update::Plan(backend::plan(&library, &data_dir)));
             });
         }
         self.screen = Screen::Review {
@@ -356,7 +395,10 @@ impl App {
         ];
         let sender = self.sender.clone();
         let running = self.running.clone();
-        backend::spawn(sender, move |tx| backend::stream(&tx, &arguments, &running));
+        let data_dir = self.data_dir.clone();
+        backend::spawn(sender, move |tx| {
+            backend::stream(&tx, &arguments, &running, &data_dir)
+        });
     }
 
     fn run(&mut self, arguments: Vec<String>, title: String) {
@@ -369,7 +411,10 @@ impl App {
         self.screen = Screen::Running { title };
         let sender = self.sender.clone();
         let running = self.running.clone();
-        backend::spawn(sender, move |tx| backend::stream(&tx, &arguments, &running));
+        let data_dir = self.data_dir.clone();
+        backend::spawn(sender, move |tx| {
+            backend::stream(&tx, &arguments, &running, &data_dir)
+        });
     }
 
     /// Stop a running operation. Only offered before the game drive is
@@ -399,6 +444,10 @@ impl App {
         if !self.scan_complete {
             parts.push("scan incomplete".to_string());
         }
+        if let Some((done, total)) = self.scanning {
+            let percent = if total > 0 { 100 * done / total } else { 0 };
+            parts.push(format!("scanning {done}/{total} ({percent}%)"));
+        }
         parts.push(match &self.lutris {
             Some(Ok(_)) => "Lutris found".to_string(),
             _ => "no Lutris".to_string(),
@@ -424,10 +473,15 @@ impl App {
                 }
                 Update::Libraries(Err(message)) => self.error = Some(message),
                 Update::Candidates(Ok(rows)) => {
+                    self.scanning = None;
                     self.selected.retain(|id| rows.iter().any(|c| &c.id == id));
                     self.candidates = rows;
                 }
-                Update::Candidates(Err(message)) => self.error = Some(message),
+                Update::Candidates(Err(message)) => {
+                    self.scanning = None;
+                    self.error = Some(message);
+                }
+                Update::Scanning((done, total)) => self.scanning = Some((done, total)),
                 Update::Lutris(result) => self.lutris = Some(result),
                 Update::Plan(Ok(plan)) => {
                     self.plan_id = Some(plan.fingerprint.clone());
@@ -460,12 +514,18 @@ impl App {
                     if matches!(self.screen, Screen::Review { .. }) {
                         self.review_ok = Some(ok);
                     }
-                    if ok {
-                        if let Some(library) = self.subject.clone() {
-                            backend::spawn(self.sender.clone(), move |tx| {
-                                let _ = tx.send(Update::Evidence(backend::evidence(&library)));
-                            });
-                        }
+                    // Re-scan the games list only when the command that just
+                    // finished was `lutris import` (the `just_imported`
+                    // flag). A finished scan must not start another scan — the
+                    // scan's own Done would re-trigger refresh_candidates and
+                    // loop forever.
+                    let was_import = self.just_imported;
+                    self.just_imported = false;
+                    if ok && was_import {
+                        // The import wrote new entries into Lutris. Re-scan so
+                        // the just-added games move from "can be added" into
+                        // "Already in Lutris".
+                        self.refresh_candidates();
                     }
                     self.refresh_libraries();
                 }
@@ -550,6 +610,13 @@ impl App {
             ],
             format!("Adding {} games to Lutris", chosen.len()),
         );
+        // This Done belongs to an import, so the completion handler can
+        // re-scan the games list without looping on a scan's own Done.
+        self.just_imported = true;
+        // These games are being handed to Lutris now. Clear the selection so
+        // the button does not keep offering them (the page refreshes on the
+        // completion event and re-lists them under "Already in Lutris").
+        self.selected.clear();
     }
 }
 
@@ -559,7 +626,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain();
         self.poll_chooser(ctx);
-        if self.busy {
+        if self.busy || self.scanning.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(120));
         }
 
@@ -582,11 +649,23 @@ impl eframe::App for App {
                         .add_enabled(can_leave, egui::Button::new("Back"))
                         .clicked()
                     {
-                        self.screen = self.back_to.clone();
+                        // The change of screen should always change the
+                        // screen. `back_to` is a hint from wherever we
+                        // navigated from, and this window's own Cancel and
+                        // Done actions can leave it pointing at the screen we
+                        // are already on. When that happens, falling back to
+                        // Home is the only target that is always reachable
+                        // and always correct.
+                        if self.screen == self.back_to {
+                            self.screen = Screen::Home;
+                        } else {
+                            self.screen = self.back_to.clone();
+                        }
+                        self.back_to = Screen::Home;
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.busy {
+                    if self.busy || self.scanning.is_some() {
                         ui.spinner();
                     }
                 });
@@ -616,7 +695,14 @@ impl eframe::App for App {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let measure = ui.available_width().min(940.0);
+            // The home page's chart reads better a little wider; the detail
+            // screens stay at the comfortable paragraph width.
+            let cap = if matches!(self.screen, Screen::Home) {
+                1120.0
+            } else {
+                940.0
+            };
+            let measure = ui.available_width().min(cap);
             ui.vertical_centered(|ui| {
             ui.set_max_width(measure);
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
@@ -656,30 +742,48 @@ impl App {
         // What the tool says is eligible, not what this window infers from the
         // shape of a state name.
         let needing = self.libraries.iter().filter(|l| l.eligible).count();
-        let missing = self.candidates.iter().filter(|c| !c.in_lutris).count();
+        // Games that are genuinely missing from Lutris and can be added.
+        // Steam games are shown for reference and are not addable, so they
+        // must not inflate the "missing" count.
+        let missing = self
+            .candidates
+            .iter()
+            .filter(|c| c.eligible && !c.in_lutris && c.source != "steam")
+            .count();
 
-        let libraries_status = if self.busy && self.libraries.is_empty() {
-            "Looking for Steam...".to_string()
+        // The same colours as the library list, so a glance at the home page
+        // and a glance at the list read the same way.
+        let ok_green = egui::Color32::from_rgb(0x2E, 0x7D, 0x32);
+        let libraries_rich = if self.busy && self.libraries.is_empty() {
+            egui::RichText::new("Looking for Steam...").weak()
         } else if self.libraries.is_empty() && !self.scan_complete {
-            "The scan could not read everything, and found nothing so far".to_string()
+            egui::RichText::new("The scan could not read everything, and found nothing so far")
+                .color(ui.visuals().warn_fg_color)
+                .strong()
         } else if self.libraries.is_empty() {
-            "No Steam libraries found".to_string()
-        } else if needing == 0 && !self.scan_complete {
-            format!(
+            egui::RichText::new("No Steam libraries found").weak()
+        } else if needing > 0 {
+            egui::RichText::new(format!("{needing} libraries can be repaired",))
+                .color(ui.visuals().warn_fg_color)
+                .strong()
+        } else if !self.scan_complete {
+            egui::RichText::new(format!(
                 "{} found, none needing repair, but the scan was incomplete",
                 self.libraries.len()
-            )
-        } else if needing == 0 {
-            format!("{} found, none needing repair", self.libraries.len())
-        } else if needing == 1 {
-            "1 library can be repaired".to_string()
+            ))
+            .color(ui.visuals().warn_fg_color)
         } else {
-            format!("{needing} libraries can be repaired")
+            egui::RichText::new(format!(
+                "{} found, none needing repair",
+                self.libraries.len()
+            ))
+            .color(ok_green)
+            .strong()
         };
         if card(
             ui,
             "Steam libraries",
-            &libraries_status,
+            libraries_rich,
             "Proton stores its working data beside each library. On NTFS that data does not \
              work, so it has to live on your Linux drive instead.",
             "Review libraries",
@@ -688,18 +792,86 @@ impl App {
             self.screen = Screen::Libraries;
         }
 
+        if !self.libraries.is_empty() {
+            ui.add_space(6.0);
+            // A small chart of what the card summarises: one row per library
+            // with name, location (fixed-width so the chart is wider) and the
+            // same status colours as the list. Rows are plain horizontals so
+            // the widths are deterministic instead of grid-converged.
+            // Every row uses the same top-aligned layout and the same fixed
+            // column widths, so the columns line up and the status badge
+            // sits in its own right-hand column.
+            let name_w = 130.0;
+            let loc_w = 640.0;
+            let status_w = 150.0;
+
+            // A subtle frame around the whole chart, with thin separators
+            // between rows so it reads as a table rather than a loose list.
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Margin::same(8.0))
+                .show(ui, |ui| {
+                    ui.set_width(name_w + loc_w + status_w + 40.0);
+
+                    ui.horizontal_top(|ui| {
+                        ui.add_sized(
+                            egui::vec2(name_w, 22.0),
+                            egui::Label::new("Name".to_string()),
+                        );
+                        ui.add_sized(
+                            egui::vec2(loc_w, 22.0),
+                            egui::Label::new("Location".to_string()),
+                        );
+                        ui.add_sized(
+                            egui::vec2(status_w, 22.0),
+                            egui::Label::new("Status".to_string()),
+                        );
+                    });
+
+                    for (i, library) in self.libraries.iter().enumerate() {
+                        if i > 0 {
+                            ui.add_space(2.0);
+                            ui.separator();
+                            ui.add_space(2.0);
+                        }
+                        ui.horizontal_top(|ui| {
+                            ui.add_sized(
+                                egui::vec2(name_w, 22.0),
+                                egui::Label::new(egui::RichText::new(&library.name).monospace()),
+                            );
+                            ui.add_sized(
+                                egui::vec2(loc_w, 40.0),
+                                egui::Label::new(
+                                    egui::RichText::new(&library.path).monospace().weak(),
+                                )
+                                .wrap(),
+                            );
+                            // Status centred in its own fixed column.
+                            let badge = status_badge(ui, library);
+                            ui.add_sized(egui::vec2(status_w, 22.0), egui::Label::new(badge));
+                        });
+                    }
+                });
+        }
+
         ui.add_space(18.0);
 
         let games_status = match &self.lutris {
-            Some(Err(_)) | None => "Lutris was not found".to_string(),
-            Some(Ok(_)) if self.roots.is_empty() => "Choose a folder to look in".to_string(),
-            Some(Ok(_)) if missing == 1 => "1 game is missing from Lutris".to_string(),
-            Some(Ok(_)) => format!("{missing} games are missing from Lutris"),
+            Some(Err(_)) | None => egui::RichText::new("Lutris was not found").weak(),
+            Some(Ok(_)) if self.roots.is_empty() => {
+                egui::RichText::new("Choose a folder to look in").weak()
+            }
+            Some(Ok(_)) if missing == 0 => {
+                egui::RichText::new("Nothing more to add to Lutris").color(ok_green)
+            }
+            Some(Ok(_)) if missing == 1 => egui::RichText::new("1 game is missing from Lutris")
+                .color(ui.visuals().warn_fg_color),
+            Some(Ok(_)) => egui::RichText::new(format!("{missing} games are missing from Lutris"))
+                .color(ui.visuals().warn_fg_color),
         };
         if card(
             ui,
             "Games not in Lutris",
-            &games_status,
+            games_status,
             "Finds installed games that no launcher knows about, such as GOG installs and \
              standalone Windows games on an external drive.",
             "Find games",
@@ -735,10 +907,87 @@ impl App {
         );
     }
 
+    /// Where relocated Proton data should live. Empty means the tool's
+    /// default under the user's data home. Changes here apply to the next
+    /// scan, so the list below reflects the choice.
+    fn data_location_row(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Where Proton data goes").strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let current = if self.data_dir.is_empty() {
+                        "Default · under your data home".to_string()
+                    } else {
+                        self.data_dir.clone()
+                    };
+                    ui.label(egui::RichText::new(format!("Now: {current}")).weak());
+                });
+            });
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.data_dir_input)
+                        .desired_width(440.0)
+                        .hint_text("/mnt/your-games/librarybridge"),
+                );
+                if ui.button("Set data location").clicked() {
+                    self.apply_data_dir();
+                }
+                if ui.button("Reset to default").clicked() {
+                    self.clear_data_dir();
+                }
+            });
+            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new(
+                    "The moved prefixes live here instead of filling the drive holding your \
+                     system. It must be a Linux filesystem — the same reason the data had to \
+                     leave NTFS in the first place. Flatpak Steam needs the location reachable \
+                     from inside its sandbox.",
+                )
+                .weak(),
+            );
+        });
+        ui.add_space(10.0);
+    }
+
+    fn apply_data_dir(&mut self) {
+        let chosen = self.data_dir_input.trim().to_string();
+        if chosen.is_empty() {
+            self.error = Some("Enter a folder first, or use Reset to default.".to_string());
+            return;
+        }
+        if !std::path::Path::new(&chosen).is_dir() {
+            self.error = Some(format!("{chosen} is not a folder"));
+            return;
+        }
+        self.error = None;
+        self.data_dir = chosen;
+        self.data_dir_input.clear();
+        save_data_dir(&self.data_dir);
+        self.refresh_libraries();
+        self.refresh_lutris();
+    }
+
+    fn clear_data_dir(&mut self) {
+        self.data_dir = String::new();
+        self.data_dir_input.clear();
+        let _ = std::fs::remove_file(saved_data_dir_path());
+        self.refresh_libraries();
+        self.refresh_lutris();
+    }
+
     #[allow(clippy::collapsible_match)]
     fn libraries_screen(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Steam libraries");
+        if self.libraries.is_empty() {
+            ui.heading("Steam libraries");
+        } else {
+            ui.heading(format!("Steam libraries — {} found", self.libraries.len()));
+        }
         ui.add_space(10.0);
+
+        self.data_location_row(ui);
 
         if !self.warnings.is_empty() {
             ui.group(|ui| {
@@ -775,16 +1024,47 @@ impl App {
             self.conflict_row(ui, library);
         }
 
+        // Original per-library cards: name, location, diagnosis, action, Details.
         egui::ScrollArea::vertical().show(ui, |ui| {
             for library in &rows {
                 ui.group(|ui| {
                     ui.set_width(ui.available_width());
 
-                    // The name a person recognises, then what is actually
-                    // wrong with it. The path and the id are reference detail
-                    // and live under Details.
-                    ui.label(egui::RichText::new(&library.name).size(17.0).strong());
+                    // Name and short id on the left, a coloured status on the
+                    // right. The eye lands on what is true of this library
+                    // before digging into anything.
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&library.name).size(17.0).strong());
+                        ui.label(
+                            egui::RichText::new(format!("[{}]", library.id))
+                                .weak()
+                                .monospace(),
+                        );
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                let badge = status_badge(ui, library);
+                                ui.label(badge);
+                            },
+                        );
+                    });
+
+                    // The location, out in the open. Two installs can have the
+                    // same name, so the path is what tells them apart.
                     ui.add_space(2.0);
+                    ui.horizontal_top(|ui| {
+                        ui.label(
+                            egui::RichText::new("Location:  ").weak().monospace(),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&library.path).monospace()
+                            )
+                            .wrap(),
+                        );
+                    });
+
+                    ui.add_space(4.0);
                     ui.label(diagnosis(library));
 
                     if !library.connected {
@@ -841,7 +1121,6 @@ impl App {
                     egui::CollapsingHeader::new("Details")
                         .id_salt(&library.id)
                         .show(ui, |ui| {
-                            field(ui, "Folder", &library.path);
                             field(
                                 ui,
                                 "Filesystem",
@@ -1053,40 +1332,100 @@ impl App {
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui
-                .checkbox(&mut self.show_known, "Include games Lutris already has")
-                .changed()
-            {
-                self.refresh_candidates();
-            }
             if ui.button("Scan again").clicked() {
                 self.refresh_candidates();
+            }
+            if !self.candidates.is_empty() {
+                if ui.button("Check all").clicked() {
+                    for candidate in &self.candidates {
+                        if candidate.eligible {
+                            self.selected.insert(candidate.id.clone());
+                        }
+                    }
+                }
+                if ui.button("Clear all").clicked() {
+                    self.selected.clear();
+                }
             }
         });
         ui.add_space(10.0);
 
         if self.candidates.is_empty() {
-            ui.label(if self.roots.is_empty() {
-                "Only Steam libraries were checked. Add a folder to find everything else."
+            if let Some((done, total)) = self.scanning {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    let percent = if total > 0 { 100 * done / total } else { 0 };
+                    ui.label(
+                        egui::RichText::new(
+                            format!("Scanning folders… {} of {} ({percent}%)", done, total),
+                        )
+                        .weak(),
+                    );
+                });
             } else {
-                "Nothing found that Lutris does not already have."
-            });
+                ui.label(if self.busy {
+                    "Scanning…"
+                } else if self.roots.is_empty() {
+                    "Only Steam libraries were checked. Add a folder to find everything else."
+                } else {
+                    "Nothing found that Lutris does not already have."
+                });
+            }
             return;
         }
 
-        let ids: Vec<String> = self.candidates.iter().map(|c| c.id.clone()).collect();
+        let all: Vec<String> = self.candidates.iter().map(|c| c.id.clone()).collect();
+        let can_add = |candidate: &backend::Candidate| candidate.eligible;
+        let is_steam = |candidate: &backend::Candidate| candidate.source == "steam";
+
         // Leave room for the action row below, whatever the window height is.
-        let list_height = (ui.available_height() - 78.0).max(160.0);
+        let list_height = (ui.available_height() - 108.0).max(160.0);
         egui::ScrollArea::vertical()
             .max_height(list_height)
             .show(ui, |ui| {
+                // 1. Games that can actually be added (grouped by confidence).
+                let addable: Vec<backend::Candidate> = self
+                    .candidates
+                    .iter()
+                    .filter(|c| can_add(c))
+                    .cloned()
+                    .collect();
+                let already = self
+                    .candidates
+                    .iter()
+                    .filter(|c| c.in_lutris && c.source != "steam")
+                    .count();
+                if addable.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No games can be added from what was found.").weak(),
+                    );
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} can be added to Lutris",
+                                addable.len(),
+                            ))
+                            .size(15.0)
+                            .strong(),
+                        );
+                        if already > 0 {
+                            ui.label(
+                                egui::RichText::new(format!("({already} already added)"))
+                                    .size(15.0)
+                                    .color(egui::Color32::from_rgb(0x2E, 0x7D, 0x32))
+                                    .strong(),
+                            );
+                        }
+                    });
+                }
                 for level in ["high", "medium", "low"] {
-                    let group: Vec<String> = ids
+                    let group: Vec<String> = all
                         .iter()
                         .filter(|id| {
                             self.candidates
                                 .iter()
-                                .any(|c| &&c.id == id && c.confidence == level)
+                                .any(|c| &&c.id == id && c.confidence == level && can_add(c))
                         })
                         .cloned()
                         .collect();
@@ -1098,6 +1437,58 @@ impl App {
                     ui.add_space(4.0);
                     for id in group {
                         self.candidate_row(ui, &id, level);
+                    }
+                }
+
+                // 2. Games already in Lutris, so the page shows what has been added. Always
+                // shown: the point of the page is finding what is missing, but
+                // the "what is already there" half is just as important.
+                {
+                    let known: Vec<String> = all
+                        .iter()
+                        .filter(|id| {
+                            self.candidates
+                                .iter()
+                                .any(|c| &&c.id == id && c.in_lutris && c.source != "steam")
+                        })
+                        .cloned()
+                        .collect();
+                    if !known.is_empty() {
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
+                            format!("Already in Lutris ({} — these are set up)", known.len(),),
+                        );
+                        ui.add_space(4.0);
+                        for id in known {
+                            self.candidate_row(ui, &id, "low");
+                        }
+                    }
+                }
+
+                // 3. Steam games, for reference only, at the bottom.
+                let steam: Vec<String> = all
+                    .iter()
+                    .filter(|id| self.candidates.iter().any(|c| &&c.id == id && is_steam(c)))
+                    .cloned()
+                    .collect();
+                if !steam.is_empty() {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Steam games ({} — shown for reference, not addable)",
+                            steam.len(),
+                        ))
+                        .size(15.0)
+                        .strong(),
+                    );
+                    ui.add_space(4.0);
+                    for id in steam {
+                        self.candidate_row(ui, &id, "low");
                     }
                 }
             });
@@ -1197,20 +1588,26 @@ impl App {
         ui.group(|ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                let mut checked = self.selected.contains(id);
-                // A game the tool would refuse cannot be selected here. The
-                // window used to offer Steam rows the command line then
-                // dropped, so the two disagreed about what would happen.
-                let response = ui.add_enabled(
-                    candidate.eligible,
-                    egui::Checkbox::new(&mut checked, ""),
-                );
-                if response.changed() {
-                    if checked {
-                        self.selected.insert(id.to_string());
-                    } else {
-                        self.selected.remove(id);
+                if candidate.eligible {
+                    let mut checked = self.selected.contains(id);
+                    let response = ui.add_enabled(true, egui::Checkbox::new(&mut checked, ""));
+                    if response.changed() {
+                        if checked {
+                            self.selected.insert(id.to_string());
+                        } else {
+                            self.selected.remove(id);
+                        }
                     }
+                } else if candidate.in_lutris {
+                    // Already set up: a green check, no checkbox.
+                    ui.label(
+                        egui::RichText::new("\u{2713}")
+                            .color(egui::Color32::from_rgb(0x2E, 0x7D, 0x32)),
+                    );
+                } else {
+                    // Not selectable: an explicit "nope" badge replaces the
+                    // checkbox so the row reads at a glance.
+                    ui.label(egui::RichText::new("\u{2715}").color(ui.visuals().warn_fg_color));
                 }
                 ui.label(egui::RichText::new(&candidate.name).size(16.0).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1226,6 +1623,41 @@ impl App {
                     }
                 });
             });
+
+            // A status line so every row's disposition is visually clear:
+            // green "can add", red/gray "not addable", blue "Steam (reference)".
+            if candidate.eligible {
+                ui.add_space(2.0);
+                ui.colored_label(
+                    egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
+                    format!(
+                        "Add to Lutris — {}",
+                        match candidate.confidence.as_str() {
+                            "high" => "confident",
+                            "medium" => "probably right",
+                            _ => "a guess, check it",
+                        }
+                    ),
+                );
+            } else if candidate.in_lutris {
+                ui.add_space(2.0);
+                ui.colored_label(
+                    egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
+                    "Already in Lutris — no need to add it again",
+                );
+            } else if candidate.source == "steam" {
+                ui.add_space(2.0);
+                ui.colored_label(
+                    egui::Color32::from_rgb(0x1E, 0x5A, 0xAA),
+                    "Steam — shown for reference, already visible in Lutris",
+                );
+            } else {
+                ui.add_space(2.0);
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    format!("Cannot be added — {}", candidate.blocking_reason),
+                );
+            }
 
             // One line saying what this is and why it is being offered. The
             // path is reference detail and lives under Details, as it does on
@@ -1252,17 +1684,8 @@ impl App {
                 ui.label(format!("Cannot be added. {}.", candidate.blocking_reason));
             }
 
-            if !candidate.filesystem_warning.is_empty() {
-                ui.add_space(2.0);
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    format!("Warning: {}.", candidate.filesystem_warning),
-                );
-                ui.label(
-                    egui::RichText::new("Adding it to Lutris does not fix that on its own.")
-                        .weak(),
-                );
-            }
+            // The filesystem warning lives in Details, not on every row: it is
+            // the same text for everything on a drive and cluttered the list.
 
             if candidate.confidence == "low" {
                 ui.add_space(2.0);
@@ -1284,6 +1707,19 @@ impl App {
                 }
                 if !candidate.appid.is_empty() {
                     field(ui, "Steam app", &candidate.appid);
+                }
+                if !candidate.filesystem_warning.is_empty() {
+                    ui.add_space(4.0);
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!("Warning: {}.", candidate.filesystem_warning),
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "Adding it to Lutris does not fix that on its own.",
+                        )
+                        .weak(),
+                    );
                 }
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("Why this one:").weak());
@@ -1331,8 +1767,9 @@ impl App {
 
         if ui.button("Measure now").clicked() {
             self.busy = true;
-            backend::spawn(self.sender.clone(), |tx| {
-                let _ = tx.send(Update::Storage(backend::storage()));
+            let data_dir = self.data_dir.clone();
+            backend::spawn(self.sender.clone(), move |tx| {
+                let _ = tx.send(Update::Storage(backend::storage(&data_dir)));
                 let _ = tx.send(Update::Done(true));
             });
         }
@@ -1390,6 +1827,32 @@ impl App {
         });
 
         ui.add_space(8.0);
+        let free = self
+            .stored
+            .first()
+            .map(|row| row.data_free_bytes)
+            .unwrap_or_default();
+        let root = self
+            .stored
+            .first()
+            .map(|row| row.data_root.to_string())
+            .unwrap_or_default();
+        if !root.is_empty() {
+            ui.label(
+                egui::RichText::new(match free {
+                    Some(bytes) => format!(
+                        "Originals are kept on purpose. The copies live at {root} with {} free \
+                         there right now.",
+                        backend::human_bytes(bytes)
+                    ),
+                    None => format!(
+                        "Originals are kept on purpose. The copies live at {root}.",
+                    ),
+                })
+                .weak(),
+            );
+        }
+        ui.add_space(4.0);
         ui.label(
             egui::RichText::new(
                 "Delete an original yourself once a game has launched and loaded a save from \
@@ -1433,6 +1896,12 @@ impl App {
                      symlinks and ordinary directories.",
                 ),
                 (
+                    "Installing the desktop icon",
+                    "The taskbar and app-menu icon comes from a desktop entry, not from this \
+                     window. Run packaging/install-desktop.sh from the repository (after the \
+                     build) to install it. Without it the desktop shows a generic icon.",
+                ),
+                (
                     "Unsupported filesystems",
                     "exFAT cannot hold a Wine prefix at all, so repair is refused rather \
                      than attempted. A filesystem this build cannot identify is also \
@@ -1450,6 +1919,10 @@ impl App {
     fn running_screen(&mut self, ui: &mut egui::Ui, title: &str) {
         ui.heading(title);
         ui.add_space(6.0);
+        // A Lutris import is a different beast from a repair: its "Finished"
+        // is about games added to Lutris, not bytes moved. Detect it by the
+        // title the window chose.
+        let is_lutris = title.starts_with("Adding");
         match self.finished {
             None => {
                 let phase = self.phase.clone();
@@ -1489,13 +1962,64 @@ impl App {
                 });
             }
             Some(true) => {
-                ui.label("Finished.");
+                if is_lutris {
+                    // Read the tool's own "N added, N skipped" line out of the
+                    // log and repeat it with the status colours.
+                    let mut added = 0usize;
+                    let mut skipped = 0usize;
+                    for line in self.log.iter().rev() {
+                        let t = line.trim();
+                        if t.ends_with("skipped.") && t.contains(" added, ") {
+                            let nums: Vec<usize> = t
+                                .split(|c: char| !c.is_ascii_digit())
+                                .filter_map(|s| s.parse().ok())
+                                .collect();
+                            if nums.len() >= 2 {
+                                added = nums[0];
+                                skipped = nums[1];
+                            }
+                            break;
+                        }
+                    }
+                    if skipped == 0 {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
+                            format!("Done — {added} game(s) added to Lutris."),
+                        );
+                    } else if added > 0 {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            format!(
+                                "Done — {added} added, {skipped} skipped. See the log below."
+                            ),
+                        );
+                    } else {
+                        ui.colored_label(
+                            ui.visuals().error_fg_color,
+                            "Nothing was added to Lutris. See the log below.",
+                        );
+                    }
+                } else {
+                    ui.label("Finished.");
+                }
             }
             Some(false) if self.cancelled => {
                 ui.label("Stopped. Nothing on the game drive was changed.");
             }
             Some(false) => {
-                ui.colored_label(ui.visuals().error_fg_color, "Stopped without finishing.");
+                if is_lutris {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        "The Lutris import did not complete cleanly — see the log below.",
+                    );
+                } else {
+                    // A non-zero exit is not always a crash: a repair can be
+                    // told to stop. The log below is the truth either way.
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        "Finished with a problem — the log below shows what happened.",
+                    );
+                }
             }
         }
         ui.add_space(10.0);
@@ -1521,11 +2045,19 @@ impl App {
                                 if ui.small_button(label).clicked() {
                                     let library = library.clone();
                                     let field = row.field.clone();
+                                    let data_dir = self.data_dir.clone();
                                     backend::spawn(self.sender.clone(), move |tx| {
-                                        let _ =
-                                            backend::record_evidence(&library, &field, answer);
+                                        let _ = backend::record_evidence(
+                                            &library,
+                                            &field,
+                                            answer,
+                                            &data_dir,
+                                        );
                                         let _ = tx
-                                            .send(Update::Evidence(backend::evidence(&library)));
+                                            .send(Update::Evidence(backend::evidence(
+                                                &library,
+                                                &data_dir,
+                                            )));
                                     });
                                 }
                             }
@@ -1546,8 +2078,11 @@ impl App {
         ui.add_space(12.0);
         if self.finished.is_some() && ui.button("Done").clicked() {
             self.screen = self.back_to.clone();
+            // No candidates re-scan here: an import already refreshed the list
+            // when it finished (Done -> just_imported -> refresh_candidates),
+            // and a repair changes nothing about the Lutris list. Re-scanning
+            // again would just run the slow scan a second time for nothing.
             self.refresh_libraries();
-            self.refresh_candidates();
         }
     }
 
@@ -1587,15 +2122,23 @@ impl App {
 
 // ------------------------------------------------------------------- widgets
 
-/// A titled panel with one action. Returns true when that action is clicked.
-fn card(ui: &mut egui::Ui, title: &str, status: &str, explanation: &str, action: &str) -> bool {
+/// A titled panel with one action. The status line is pre-coloured by the
+/// caller, so the home page uses the same status colours as the library list.
+/// Returns true when that action is clicked.
+fn card(
+    ui: &mut egui::Ui,
+    title: &str,
+    status: egui::RichText,
+    explanation: &str,
+    action: &str,
+) -> bool {
     let mut clicked = false;
     ui.group(|ui| {
         ui.set_width(ui.available_width());
         ui.vertical(|ui| {
             ui.label(egui::RichText::new(title).size(19.0).strong());
             ui.add_space(5.0);
-            ui.label(egui::RichText::new(status).size(15.0));
+            ui.label(status.size(15.0));
             ui.add_space(7.0);
             ui.label(egui::RichText::new(explanation).weak());
             ui.add_space(11.0);
@@ -1616,6 +2159,34 @@ fn field(ui: &mut egui::Ui, label: &str, value: &str) {
         );
         ui.add(egui::Label::new(egui::RichText::new(value).monospace()).wrap());
     });
+}
+
+/// The short, coloured status shown beside a library's name. The state codes
+/// are for the tool to act on; these words are for a person to scan.
+fn status_badge(ui: &mut egui::Ui, library: &backend::Library) -> egui::RichText {
+    let (text, color) = if !library.connected {
+        (
+            "Drive not connected".to_string(),
+            ui.visuals().weak_text_color(),
+        )
+    } else if library.state.as_str() == "repair_available" {
+        if library.eligible {
+            ("Repair available".to_string(), ui.visuals().warn_fg_color)
+        } else {
+            ("No repair needed".to_string(), ui.visuals().weak_text_color())
+        }
+    } else {
+        (
+            library.headline().to_string(),
+            match library.state.as_str() {
+                "repaired" => egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
+                "dangling_link" | "linked_elsewhere" => ui.visuals().error_fg_color,
+                "interrupted" => ui.visuals().warn_fg_color,
+                _ => ui.visuals().weak_text_color(),
+            },
+        )
+    };
+    egui::RichText::new(text).color(color).strong()
 }
 
 /// One sentence saying what is true of this library, in the words a person

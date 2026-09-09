@@ -10,4 +10,4 @@ Type=Application
 Categories=Game;Utility;
 Keywords=Steam;Lutris;Proton;Wine;Games;Library;
 StartupNotify=true
-StartupWMClass=LibraryBridge
+StartupWMClass=librarybridge

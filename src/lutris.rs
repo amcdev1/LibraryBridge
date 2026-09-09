@@ -63,6 +63,29 @@ fn config_home() -> PathBuf {
     }
 }
 
+fn data_home() -> PathBuf {
+    match std::env::var_os("XDG_DATA_HOME") {
+        Some(dir) if Path::new(&dir).is_absolute() => PathBuf::from(dir),
+        _ => home().join(".local/share"),
+    }
+}
+
+/// Which directory holds a Lutris installation's config. Lutris 0.5+ (the
+/// GTK4 rewrite) moved everything into the data home: `~/.local/share/lutris`
+/// holds `games/`, `pga.db`, runners, and the config. Earlier releases used
+/// the config home. Prefer whichever actually exists.
+pub fn lutris_base() -> Option<PathBuf> {
+    let modern = data_home().join("lutris");
+    if modern.join("games").is_dir() || modern.join("pga.db").is_file() {
+        return Some(modern);
+    }
+    let legacy = config_home().join("lutris");
+    if legacy.is_dir() {
+        return Some(legacy);
+    }
+    None
+}
+
 /// Look for a program on PATH without running anything.
 fn on_path(program: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
@@ -78,20 +101,29 @@ fn on_path(program: &str) -> bool {
 pub fn find_installations() -> Vec<Installation> {
     let mut found = Vec::new();
 
-    let native_config = config_home().join("lutris");
-    if native_config.is_dir() || on_path("lutris") {
+    let native_base = lutris_base().unwrap_or_default();
+    let lutris_visible = on_path("lutris") || native_base.is_dir();
+    if lutris_visible {
         found.push(Installation {
             packaging: Packaging::Native,
-            config_dir: native_config,
+            config_dir: native_base,
             command: vec!["lutris".to_string()],
         });
     }
 
     let flatpak_app = home().join(".var/app/net.lutris.Lutris");
     if flatpak_app.is_dir() {
+        // Flatpak Lutris 0.5+ keeps its data under the app's data dir.
+        let flatpak_data = flatpak_app.join("data/lutris");
+        let flatpak_config = flatpak_app.join("config/lutris");
+        let base = if flatpak_data.join("games").is_dir() {
+            flatpak_data
+        } else {
+            flatpak_config
+        };
         found.push(Installation {
             packaging: Packaging::Flatpak,
-            config_dir: flatpak_app.join("config/lutris"),
+            config_dir: base,
             command: vec![
                 "flatpak".to_string(),
                 "run".to_string(),
@@ -138,9 +170,19 @@ pub fn existing_entries(installation: &Installation) -> Vec<Entry> {
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
-        let slug = strip_trailing_id(&stem);
+        // The slug that identifies the game is the `game_slug` field Lutris
+        // writes (and what the tool's own definitions emit), not the filename,
+        // which carries a "-librarybridge-<timestamp>" suffix. A filename-only
+        // read would never match a candidate's slug.
+        let slug = fields
+            .get("game_slug")
+            .cloned()
+            .unwrap_or_else(|| strip_trailing_id(&stem));
         entries.push(Entry {
-            name: titleize(&slug),
+            name: fields
+                .get("name")
+                .cloned()
+                .unwrap_or_else(|| titleize(&slug)),
             runner: fields
                 .get("runner")
                 .cloned()
@@ -306,7 +348,13 @@ impl Definition {
 
 /// Hand one definition to Lutris. Lutris shows its own installer dialog, so
 /// this returns once the user has finished with it.
-pub fn install(installation: &Installation, yaml_path: &Path) -> Result<(), String> {
+///
+/// Lutris's exit code is not a reliable success signal: `--install` can exit
+/// non-zero even when the entry landed (recent Lutris versions do), and the
+/// user can cancel the dialog. So a non-zero exit is reported, but the caller
+/// decides what it means by re-reading Lutris's config afterwards. The caller
+/// that checks for the entry decides success, not this function.
+pub fn install(installation: &Installation, yaml_path: &Path) -> Result<i32, String> {
     let (program, leading) = installation
         .command
         .split_first()
@@ -318,12 +366,12 @@ pub fn install(installation: &Installation, yaml_path: &Path) -> Result<(), Stri
         .status()
         .map_err(|e| format!("could not run Lutris: {e}"))?;
     if status.success() {
-        Ok(())
+        Ok(0)
     } else {
-        Err(format!(
-            "Lutris exited with status {}. Nothing was changed by LibraryBridge.",
-            status.code().unwrap_or(-1)
-        ))
+        // Report the code but do not fail the import on it. The dialog could
+        // have been cancelled, or Lutris could have added the game anyway.
+        // The caller verifies empirically by re-reading Lutris's config.
+        Ok(status.code().unwrap_or(-1))
     }
 }
 

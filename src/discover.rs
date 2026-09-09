@@ -54,20 +54,81 @@ pub struct Candidate {
 }
 
 /// Scan the selected roots plus every Steam library, and mark anything Lutris
-/// already has.
-pub fn scan(roots: &[PathBuf], steam_root: Option<&Path>, existing: &[Entry]) -> Vec<Candidate> {
+/// already has. `progress` is called with the number of folders done and the
+/// total, off and on; it is a display hook, never a source of truth.
+pub fn scan(
+    roots: &[PathBuf],
+    steam_root: Option<&Path>,
+    existing: &[Entry],
+    mut progress: impl FnMut(usize, usize),
+) -> Vec<Candidate> {
     let mut candidates = Vec::new();
 
-    let (libraries, _) = steam::all_libraries(steam_root);
+    // Count every child folder that will be examined: those are the granular
+    // progress units, so a single huge root still shows a moving percent.
+    let mut total_folders = 0usize;
+    for root in roots {
+        if let Ok(dir) = fs::read_dir(root) {
+            total_folders += dir
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    fs::symlink_metadata(p).map(|m| m.is_dir()).unwrap_or(false) && !is_noise_dir(p)
+                })
+                .count();
+        }
+    }
+    if total_folders == 0 {
+        // Nothing enumerable inside any root: report per-root rather than
+        // dividing by zero.
+        total_folders = roots.len();
+    }
+
+    let (libraries, _) = steam::all_libraries(steam_root, None);
     for library in &libraries {
         if library.connected {
             candidates.extend(steam_games(library));
         }
     }
 
+    let mut checked = 0usize;
+    // Each child folder inside a root is one progress step, so a single large
+    // root still walks a percentage instead of hanging at 0%.
     for root in roots {
-        candidates.extend(scan_root(root));
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        if let Ok(children) = fs::read_dir(root) {
+            dirs = children
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    fs::symlink_metadata(p)
+                        .map(|meta| meta.is_dir())
+                        .unwrap_or(false)
+                        && !is_noise_dir(p)
+                })
+                .collect();
+        }
+        dirs.sort();
+
+        // The root itself is only examined if none of its children held a
+        // game; that matches scan_root's behaviour below.
+        let mut found_children = false;
+        for (done, dir) in dirs.iter().enumerate() {
+            checked += 1;
+            if let Some(candidate) = examine_folder(dir) {
+                candidates.push(candidate);
+                found_children = true;
+            }
+            progress(checked, total_folders.max(1));
+            let _ = done;
+        }
+        if !found_children {
+            if let Some(candidate) = examine_folder(root) {
+                candidates.push(candidate);
+            }
+        }
     }
+    progress(total_folders, total_folders.max(1));
 
     // A folder inside a Steam library is already covered by its manifest.
     let steam_dirs: Vec<PathBuf> = libraries
@@ -209,45 +270,6 @@ fn steam_games(library: &steam::Library) -> Vec<Candidate> {
 }
 
 // ------------------------------------------------------- folder-based scanning
-
-fn scan_root(root: &Path) -> Vec<Candidate> {
-    let mut found = Vec::new();
-    if !root.is_dir() {
-        return found;
-    }
-
-    // A root is normally a container of game folders, so its children are
-    // examined first. Only when none of them holds a game is the root itself
-    // treated as one, which is what happens when the user points straight at
-    // a single game. Doing both would report the same executable twice.
-    if let Ok(children) = fs::read_dir(root) {
-        // `is_dir` follows links, so a child that is a symlink to a directory
-        // outside the chosen folder would be scanned. The recursive walker
-        // already refuses links; this is the entry point it never sees.
-        let mut dirs: Vec<PathBuf> = children
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                fs::symlink_metadata(p)
-                    .map(|meta| meta.is_dir())
-                    .unwrap_or(false)
-                    && !is_noise_dir(p)
-            })
-            .collect();
-        dirs.sort();
-        for dir in dirs {
-            if let Some(candidate) = examine_folder(&dir) {
-                found.push(candidate);
-            }
-        }
-    }
-    if found.is_empty() {
-        if let Some(candidate) = examine_folder(root) {
-            found.push(candidate);
-        }
-    }
-    found
-}
 
 fn examine_folder(folder: &Path) -> Option<Candidate> {
     let files = list_files(folder)?;
