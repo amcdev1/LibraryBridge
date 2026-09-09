@@ -897,7 +897,7 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
         let mut progress = |_path: &Path, bytes: u64| {
             copied_files += 1;
             copied_bytes += bytes;
-            if copied_files % 250 == 0 {
+            if copied_files.is_multiple_of(250) {
                 if json {
                     println!(
                         "{{\"event\": \"progress\", \"files\": {copied_files}, \"bytes\": {copied_bytes}}}"

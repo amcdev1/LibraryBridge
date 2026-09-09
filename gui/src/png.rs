@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn chunk_lengths_and_checksums_line_up() {
-        let encoded = encode(3, 2, &vec![7u8; 3 * 2 * 4]);
+        let encoded = encode(3, 2, &[7u8; 3 * 2 * 4]);
         let mut at = 8;
         let mut kinds = Vec::new();
         while at + 8 <= encoded.len() {

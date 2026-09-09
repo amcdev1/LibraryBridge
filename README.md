@@ -9,6 +9,8 @@ It also finds installed games that no launcher knows about, such as GOG
 installs and standalone Windows games sitting on the same drive, and can add
 them to Lutris.
 
+> LibraryBridge is an independent project and is not affiliated with, endorsed by, or sponsored by Valve Corporation or Steam. Steam and Proton are trademarks of Valve Corporation.
+
 **Status: built and tested, never run on Linux, not ready for release.**
 See [the release status](docs/RELEASE-STATUS.md) for what that means. The command line tool,
 the Lutris integration and the desktop window all work and are covered by 105

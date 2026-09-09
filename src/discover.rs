@@ -497,7 +497,7 @@ fn windows_candidate(folder: &Path, executables: &[&PathBuf]) -> Option<Candidat
         scored.push((score, exe, reasons));
     }
 
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|item| std::cmp::Reverse(item.0));
     let (best_score, best, mut reasons) = scored.first().cloned()?;
 
     let margin = best_score - scored.get(1).map(|s| s.0).unwrap_or(-100);

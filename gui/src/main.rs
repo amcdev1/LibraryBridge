@@ -735,6 +735,7 @@ impl App {
         );
     }
 
+    #[allow(clippy::collapsible_match)]
     fn libraries_screen(&mut self, ui: &mut egui::Ui) {
         ui.heading("Steam libraries");
         ui.add_space(10.0);

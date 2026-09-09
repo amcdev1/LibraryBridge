@@ -98,7 +98,7 @@ fn scan(options: &Options) -> Result<i32, String> {
     let installations = lutris::find_installations();
     let existing: Vec<lutris::Entry> = installations
         .iter()
-        .flat_map(|i| lutris::existing_entries(i))
+        .flat_map(lutris::existing_entries)
         .collect();
 
     if installations.is_empty() {
@@ -290,7 +290,7 @@ fn plan(options: &Options) -> Result<i32, String> {
     let installations = lutris::find_installations();
     let existing: Vec<lutris::Entry> = installations
         .iter()
-        .flat_map(|i| lutris::existing_entries(i))
+        .flat_map(lutris::existing_entries)
         .collect();
     let candidates = discover::scan(&options.roots, options.steam_root.as_deref(), &existing);
 

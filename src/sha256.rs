@@ -134,8 +134,8 @@ impl Sha256 {
             h[1] = h[0];
             h[0] = t1.wrapping_add(t2);
         }
-        for i in 0..8 {
-            self.state[i] = self.state[i].wrapping_add(h[i]);
+        for (state, &value) in self.state.iter_mut().zip(h.iter()) {
+            *state = state.wrapping_add(value);
         }
     }
 }
