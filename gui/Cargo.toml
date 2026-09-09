@@ -1,0 +1,21 @@
+[package]
+name = "librarybridge-gui"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop window over the librarybridge command line tool"
+license = "MIT"
+
+# The GUI is the only part of this project with dependencies. It never
+# reimplements repair or discovery logic: it runs the `librarybridge` binary and
+# reads its JSON, so the tested code stays in one place.
+[dependencies]
+eframe = "0.29"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde_json = "1"
+# The desktop's own folder chooser. On Linux this goes through the XDG desktop
+# portal, which is the one route that also works from inside a Flatpak.
+rfd = "0.15"
+
+[[bin]]
+name = "librarybridge-gui"
+path = "src/main.rs"

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=LibraryBridge
+GenericName=Game Library Bridge
+Comment=Repair and connect Linux game libraries
+Exec=librarybridge-gui %U
+TryExec=librarybridge-gui
+Icon=librarybridge
+Terminal=false
+Type=Application
+Categories=Game;Utility;
+Keywords=Steam;Lutris;Proton;Wine;Games;Library;
+StartupNotify=true
+StartupWMClass=LibraryBridge

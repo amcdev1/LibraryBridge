@@ -1,0 +1,4 @@
+/target
+
+# macOS directory metadata, not project content
+.DS_Store
