@@ -43,7 +43,7 @@ fn classify(fs_type: &str) -> Capability {
     match fs_type {
         "ext2" | "ext3" | "ext4" | "btrfs" | "xfs" | "f2fs" | "zfs" | "bcachefs" | "reiserfs"
         | "jfs" | "nilfs2" | "overlay" | "apfs" | "hfs" => Capability::Native,
-        "ntfs" | "ntfs3" | "fuseblk" => Capability::NeedsRepair,
+        "ntfs" | "ntfs3" => Capability::NeedsRepair,
         "exfat" | "vfat" | "msdos" | "fat" | "fat32" | "iso9660" | "udf" => Capability::NoSymlinks,
         _ => Capability::Unknown,
     }
@@ -94,10 +94,18 @@ fn parse_mountinfo_line(line: &str) -> Option<Mount> {
     let read_only =
         options.split(',').any(|o| o == "ro") || super_options.split(',').any(|o| o == "ro");
 
-    // ntfs-3g appears as `fuseblk`; the mount source or subtype is the only
-    // hint about what is really down there.
-    let fs_type = if fs_type == "fuseblk" && source.to_lowercase().contains("ntfs") {
-        "ntfs-3g".to_string()
+    // A FUSE filesystem on a block device reports `fuseblk` and says nothing
+    // about what is actually down there. ntfs-3g and exfat-fuse look the same
+    // from here, and treating them alike would offer an exFAT volume a repair
+    // that cannot work. Only a mount whose source names NTFS is taken as NTFS;
+    // anything else stays unidentified, which blocks rather than guesses.
+    let fs_type = if fs_type == "fuseblk" {
+        let hint = source.to_lowercase();
+        if hint.contains("ntfs") {
+            "ntfs-3g".to_string()
+        } else {
+            format!("fuseblk ({source})")
+        }
     } else {
         fs_type
     };
@@ -222,10 +230,18 @@ mod tests {
     }
 
     #[test]
-    fn recognises_ntfs_3g_behind_fuseblk() {
-        let line = "40 35 0:45 / /mnt/games rw,relatime - fuseblk /dev/sdb1 rw,user_id=0";
+    fn a_fuse_mount_is_only_ntfs_when_it_says_so() {
+        // ntfs-3g names itself in the mount source.
+        let line = "40 35 0:45 / /mnt/games rw,relatime - fuseblk /dev/sdb1#ntfs rw,user_id=0";
         let mount = parse_mountinfo_line(line).unwrap();
         assert_eq!(mount.capability, Capability::NeedsRepair);
+        assert_eq!(mount.fs_type, "ntfs-3g");
+
+        // Anything else on the same driver could be exfat-fuse, which cannot
+        // hold a symlink. Guessing NTFS here would offer a doomed repair.
+        let line = "40 35 0:45 / /mnt/games rw,relatime - fuseblk /dev/sdb1 rw,user_id=0";
+        let mount = parse_mountinfo_line(line).unwrap();
+        assert_eq!(mount.capability, Capability::Unknown);
     }
 
     #[test]

@@ -153,6 +153,8 @@ machine.
   feature, and the one place its priorities were inverted.
 - [GUI plan](GUI_PLAN.md): the window, its screen specification and what it
   does not do yet.
+- [Linux handoff](docs/LINUX-HANDOFF.md): everything that has never run, why
+  it matters, and what would settle it. Start here to take this further.
 - [Release status](docs/RELEASE-STATUS.md): where this stands against the
   release plan, phase by phase.
 - [Release tests](docs/RELEASE-TESTS.md): the scenarios a release candidate has
