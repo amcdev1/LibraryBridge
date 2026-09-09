@@ -149,6 +149,9 @@ struct App {
     phase: Option<backend::Phase>,
     running: backend::Running,
     cancelled: bool,
+    /// The library a run is about, so its evidence can be shown afterwards.
+    subject: Option<String>,
+    evidence: Vec<backend::EvidenceRow>,
 
     sender: Sender<Update>,
     receiver: Receiver<Update>,
@@ -162,7 +165,14 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, start: Start) -> App {
-        cc.egui_ctx.set_pixels_per_point(1.25);
+        // Respect whatever scale the desktop asks for rather than imposing
+        // one. A fixed factor fights the user's own display settings.
+        let mut style = (*cc.egui_ctx.style()).clone();
+        // Controls large enough to hit with a trackpad or a thumb.
+        style.spacing.interact_size.y = style.spacing.interact_size.y.max(30.0);
+        style.spacing.button_padding = egui::vec2(10.0, 6.0);
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        cc.egui_ctx.set_style(style);
         let decoded_icon = image::load_from_memory(APP_ICON_BYTES)
             .expect("LibraryBridge icon must be decodable")
             .to_rgba8();
@@ -208,6 +218,8 @@ impl App {
             phase: None,
             running: backend::Running::default(),
             cancelled: false,
+            subject: None,
+            evidence: Vec::new(),
             sender,
             receiver,
             icon_texture,
@@ -394,6 +406,8 @@ impl App {
                 }
                 Update::Plan(Err(_)) => self.plan = None,
                 Update::Storage(Ok(rows)) => self.stored = rows,
+                Update::Evidence(Ok(rows)) => self.evidence = rows,
+                Update::Evidence(Err(message)) => self.error = Some(message),
                 Update::Storage(Err(message)) => self.error = Some(message),
                 Update::Event(phase) => self.phase = Some(phase),
                 Update::Line(line) => {
@@ -416,6 +430,13 @@ impl App {
                     self.finished = Some(ok);
                     if matches!(self.screen, Screen::Review { .. }) {
                         self.review_ok = Some(ok);
+                    }
+                    if ok {
+                        if let Some(library) = self.subject.clone() {
+                            backend::spawn(self.sender.clone(), move |tx| {
+                                let _ = tx.send(Update::Evidence(backend::evidence(&library)));
+                            });
+                        }
                     }
                     self.refresh_libraries();
                 }
@@ -467,7 +488,26 @@ impl App {
             })
             .collect();
         let document = serde_json::json!({ "schema": 1, "games": games });
-        let path = std::env::temp_dir().join("librarybridge-gui-plan.json");
+        // A private name per run. A shared, predictable one in a world-
+        // writable directory is something another process can replace between
+        // this window writing it and the tool reading it.
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let directory = std::env::temp_dir().join(format!(
+            "librarybridge-{}-{stamp}",
+            std::process::id()
+        ));
+        if let Err(error) = std::fs::create_dir_all(&directory) {
+            self.error = Some(format!("could not prepare the import file: {error}"));
+            return;
+        }
+        let _ = std::fs::set_permissions(
+            &directory,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+        );
+        let path = directory.join("plan.json");
         if let Err(error) = std::fs::write(&path, document.to_string()) {
             self.error = Some(format!("could not write the import file: {error}"));
             return;
@@ -507,7 +547,7 @@ impl eframe::App for App {
                 if !matches!(self.screen, Screen::Home) {
                     let can_leave = !self.busy;
                     if ui
-                        .add_enabled(can_leave, egui::Button::new("← Back"))
+                        .add_enabled(can_leave, egui::Button::new("Back"))
                         .clicked()
                     {
                         self.screen = self.back_to.clone();
@@ -554,17 +594,28 @@ impl eframe::App for App {
 impl App {
     fn home(&mut self, ui: &mut egui::Ui) {
         ui.add_space(20.0);
-        let needing = self.libraries.iter().filter(|l| l.actionable()).count();
+        // What the tool says is eligible, not what this window infers from the
+        // shape of a state name.
+        let needing = self.libraries.iter().filter(|l| l.eligible).count();
         let missing = self.candidates.iter().filter(|c| !c.in_lutris).count();
 
-        let libraries_status = if self.libraries.is_empty() {
+        let libraries_status = if self.busy && self.libraries.is_empty() {
             "Looking for Steam...".to_string()
+        } else if self.libraries.is_empty() && !self.scan_complete {
+            "The scan could not read everything, and found nothing so far".to_string()
+        } else if self.libraries.is_empty() {
+            "No Steam libraries found".to_string()
+        } else if needing == 0 && !self.scan_complete {
+            format!(
+                "{} found, none needing repair, but the scan was incomplete",
+                self.libraries.len()
+            )
         } else if needing == 0 {
-            format!("{} found, nothing needs repair", self.libraries.len())
+            format!("{} found, none needing repair", self.libraries.len())
         } else if needing == 1 {
-            "1 library needs repair".to_string()
+            "1 library can be repaired".to_string()
         } else {
-            format!("{needing} libraries need repair")
+            format!("{needing} libraries can be repaired")
         };
         if card(
             ui,
@@ -650,6 +701,18 @@ impl App {
         }
 
         let rows = self.libraries.clone();
+
+        // A library with two sets of data needs a decision before anything
+        // else on this screen matters, so it goes above the list.
+        let conflicts: Vec<backend::Library> = rows
+            .iter()
+            .filter(|l| !l.destination_occupied.is_empty())
+            .cloned()
+            .collect();
+        for library in &conflicts {
+            self.conflict_row(ui, library);
+        }
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             for library in &rows {
                 ui.group(|ui| {
@@ -661,7 +724,15 @@ impl App {
                                 .monospace(),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(state_badge(&library.state));
+                            // The badge follows what the tool would actually
+                            // do, not the shape of the state name. A library
+                            // on an unidentified filesystem must not read
+                            // "needs repair" when a repair would be refused.
+                            ui.label(if library.eligible {
+                                state_badge(&library.state)
+                            } else {
+                                egui::RichText::new("no repair available").monospace()
+                            });
                         });
                     });
                     ui.add(
@@ -699,7 +770,7 @@ impl App {
                     ui.horizontal(|ui| {
                         let enabled = !self.busy;
                         match library.state.as_str() {
-                            "repair_available" | "interrupted" => {
+                            "repair_available" | "interrupted" if library.eligible => {
                                 if ui
                                     .add_enabled(enabled, egui::Button::new("Review repair"))
                                     .clicked()
@@ -726,7 +797,11 @@ impl App {
                                 }
                             }
                             _ => {
-                                ui.label(egui::RichText::new("Nothing to do for this one").weak());
+                                ui.label(if library.blocking_reason.is_empty() {
+                                    "Nothing to do for this one".to_string()
+                                } else {
+                                    format!("No repair here: {}", library.blocking_reason)
+                                });
                             }
                         }
                     });
@@ -856,6 +931,7 @@ impl App {
                     }
                 }
                 self.back_to = Screen::Libraries;
+                self.subject = Some(id.to_string());
                 self.run(arguments, title.to_string());
             }
             if ui.add_enabled(ready, egui::Button::new("Cancel")).clicked() {
@@ -908,7 +984,7 @@ impl App {
             ui.horizontal_wrapped(|ui| {
                 let mut drop = None;
                 for (index, root) in self.roots.iter().enumerate() {
-                    if ui.button(format!("{root}  ✕")).clicked() {
+                    if ui.button(format!("{root}   remove")).clicked() {
                         drop = Some(index);
                     }
                 }
@@ -1109,6 +1185,69 @@ impl App {
         ui.add_space(6.0);
     }
 
+    /// Two sets of data exist for one library and only the user can say which
+    /// counts. Both are kept whichever is chosen, and neither is preselected.
+    fn conflict_row(&mut self, ui: &mut egui::Ui, library: &backend::Library) {
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!("Two data copies need review: {}", library.name),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                "A repair was interrupted and something created new Proton data before it \
+                 could finish. Both sets are real, and neither has been changed.",
+            );
+            field(ui, "On the drive", &library.path);
+            field(ui, "Moved copy", &library.destination_occupied);
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(
+                    "Whichever you keep, the other is set aside and kept, not deleted.",
+                )
+                .weak(),
+            );
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let ready = !self.busy;
+                if ui
+                    .add_enabled(ready, egui::Button::new("Keep the moved copy"))
+                    .clicked()
+                {
+                    self.back_to = Screen::Libraries;
+                    self.run(
+                        vec![
+                            "fix".to_string(),
+                            library.id.clone(),
+                            "--yes".to_string(),
+                            "--json".to_string(),
+                            "--keep-destination".to_string(),
+                        ],
+                        format!("Keeping the moved copy for {}", library.name),
+                    );
+                }
+                if ui
+                    .add_enabled(ready, egui::Button::new("Keep what is on the drive"))
+                    .clicked()
+                {
+                    self.back_to = Screen::Libraries;
+                    self.run(
+                        vec![
+                            "fix".to_string(),
+                            library.id.clone(),
+                            "--yes".to_string(),
+                            "--json".to_string(),
+                            "--replace-destination".to_string(),
+                        ],
+                        format!("Keeping the drive copy for {}", library.name),
+                    );
+                }
+            });
+        });
+        ui.add_space(10.0);
+    }
+
     fn storage_screen(&mut self, ui: &mut egui::Ui) {
         ui.heading("Storage and backups");
         ui.add_space(6.0);
@@ -1289,6 +1428,49 @@ impl App {
         }
         ui.add_space(10.0);
         log_view(ui, &self.log, 460.0);
+        if self.finished == Some(true) && !self.evidence.is_empty() {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("What this does and does not establish").strong());
+            ui.add_space(6.0);
+            let rows = self.evidence.clone();
+            let subject = self.subject.clone();
+            for row in &rows {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{:<38}", backend::describe_evidence(&row.field)));
+                    ui.label(&row.result);
+                    if row.by_tool {
+                        ui.label(egui::RichText::new("checked here").weak());
+                    }
+                    if row.field != "files" {
+                        if let Some(library) = &subject {
+                            for (label, answer) in
+                                [("Worked", "yes"), ("Did not", "no"), ("N/A", "na")]
+                            {
+                                if ui.small_button(label).clicked() {
+                                    let library = library.clone();
+                                    let field = row.field.clone();
+                                    backend::spawn(self.sender.clone(), move |tx| {
+                                        let _ =
+                                            backend::record_evidence(&library, &field, answer);
+                                        let _ = tx
+                                            .send(Update::Evidence(backend::evidence(&library)));
+                                    });
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(
+                    "Only the first row was established by this repair. The rest need a game, \
+                     and stay unanswered until you say otherwise.",
+                )
+                .weak(),
+            );
+        }
+
         ui.add_space(12.0);
         if self.finished.is_some() && ui.button("Done").clicked() {
             self.screen = self.back_to.clone();

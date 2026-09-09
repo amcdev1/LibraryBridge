@@ -36,6 +36,13 @@ pub struct Library {
     pub target: String,
     pub connected: bool,
     pub backups: Vec<String>,
+    /// Whether a repair applies, decided by the tool rather than guessed here
+    /// from the shape of the state.
+    pub eligible: bool,
+    pub blocking_reason: String,
+    /// Data already at the destination while this library is not repaired,
+    /// which is a choice for the user, not something to resolve silently.
+    pub destination_occupied: String,
 }
 
 impl Library {
@@ -54,9 +61,6 @@ impl Library {
         }
     }
 
-    pub fn actionable(&self) -> bool {
-        matches!(self.state.as_str(), "repair_available" | "interrupted")
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -165,6 +169,9 @@ pub fn libraries() -> Result<Scan, String> {
                 .get("connected")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            eligible: row.get("eligible").and_then(Value::as_bool).unwrap_or(false),
+            blocking_reason: text(row, "blocking_reason"),
+            destination_occupied: text(row, "destination_occupied"),
             backups: row
                 .get("backups")
                 .and_then(Value::as_array)
@@ -319,6 +326,7 @@ pub enum Update {
     Candidates(Result<Vec<Candidate>, String>),
     Plan(Result<Plan, String>),
     Storage(Result<Vec<Stored>, String>),
+    Evidence(Result<Vec<EvidenceRow>, String>),
     Lutris(Result<String, String>),
     /// One line of output from a running command.
     Line(String),
@@ -506,5 +514,49 @@ pub fn human_bytes(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// One thing that has or has not been established about a library.
+#[derive(Debug, Clone, Default)]
+pub struct EvidenceRow {
+    pub field: String,
+    pub result: String,
+    pub by_tool: bool,
+}
+
+pub fn evidence(library_id: &str) -> Result<Vec<EvidenceRow>, String> {
+    let out = run(&["evidence".into(), library_id.into(), "--json".into()])?;
+    let parsed: Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
+    Ok(parsed
+        .get("evidence")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|row| EvidenceRow {
+            field: text(row, "field"),
+            result: text(row, "result"),
+            by_tool: row.get("by_tool").and_then(Value::as_bool).unwrap_or(false),
+        })
+        .collect())
+}
+
+pub fn record_evidence(library_id: &str, field: &str, answer: &str) -> Result<(), String> {
+    run(&[
+        "evidence".into(),
+        library_id.into(),
+        "--record".into(),
+        format!("{field}={answer}"),
+    ])
+    .map(|_| ())
+}
+
+pub fn describe_evidence(field: &str) -> &'static str {
+    match field {
+        "files" => "Files copied and checked",
+        "launch" => "The game starts",
+        "save" => "A save loads, and a new one is kept",
+        _ => "Steam Cloud still syncs",
     }
 }

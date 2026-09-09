@@ -5,6 +5,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use crate::evidence;
 use crate::fsops::{self, human_bytes};
 use crate::lock;
 use crate::record;
@@ -37,6 +38,8 @@ pub struct Options {
     /// The plan identity the caller reviewed. If it no longer matches, the
     /// operation is refused rather than applied to something else.
     pub expect: Option<String>,
+    /// One `field=answer` pair for the evidence command.
+    pub record: Option<String>,
     pub keep_destination: bool,
     /// Resolve it the other way: set the destination aside and copy the
     /// library's current compatdata over.
@@ -227,7 +230,11 @@ fn advice(library: &Library, report: &state::Report, mount: Option<&system::Moun
 /// The same judgement the window needs, made once, here.
 fn repair_blocker(library: &Library, report: &state::Report) -> Option<String> {
     match report.state {
-        State::NotRepaired { .. } | State::InterruptedAwaitingLink { .. } => {}
+        // An interrupted repair is finished regardless of what the filesystem
+        // looks like: that decision was made and acted on already, and the
+        // remaining step is one symlink.
+        State::InterruptedAwaitingLink { .. } => return None,
+        State::NotRepaired { .. } => {}
         State::Repaired { .. } => return Some("it is already repaired".to_string()),
         State::Disconnected => return Some("the drive is not connected".to_string()),
         State::NoCompatdata => return Some("there is no Proton data to move yet".to_string()),
@@ -303,6 +310,13 @@ fn scan_json(libraries: &[Library], warnings: &[String]) -> String {
             .map(|b| json_string(&b.to_string_lossy()))
             .collect();
         out.push_str(&format!("      \"backups\": [{}],\n", backups.join(", ")));
+        out.push_str(&format!(
+            "      \"destination_occupied\": {},\n",
+            match &report.existing_destination {
+                Some(path) => json_string(&path.to_string_lossy()),
+                None => "null".to_string(),
+            }
+        ));
         let blocker = repair_blocker(library, &report);
         out.push_str(&format!("      \"eligible\": {},\n", blocker.is_none()));
         out.push_str(&format!(
@@ -365,6 +379,75 @@ fn emit(options: &Options, event: &str, fields: &[(&str, String)]) {
 
 fn number(value: u64) -> String {
     value.to_string()
+}
+
+// ------------------------------------------------------------ evidence
+
+/// What has and has not been established about a library.
+///
+/// A repair establishes that the files copied and verified. It establishes
+/// nothing about whether a game runs, and the two are kept apart here so a
+/// completed repair never reads as a working game.
+pub fn evidence(options: &Options, reference: &str) -> Result<i32, String> {
+    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref());
+    let library = steam::resolve(&libraries, reference)?;
+
+    if let Some(pair) = &options.record {
+        let (field, answer) = pair
+            .split_once('=')
+            .ok_or("--record takes field=answer, for example launch=yes")?;
+        let result = evidence::parse_result(answer).ok_or_else(|| {
+            format!("'{answer}' is not an answer. Use yes, no or na.")
+        })?;
+        evidence::Evidence::record(&library.id, field, result, false)?;
+        println!("Recorded {field}: {}", result.label());
+        return Ok(0);
+    }
+
+    let record = evidence::Evidence::load(&library.id);
+    if options.json {
+        let rows: Vec<String> = evidence::FIELDS
+            .iter()
+            .map(|field| {
+                let row = record.get(field);
+                format!(
+                    "    {{\"field\": {}, \"result\": {}, \"when\": {}, \"by_tool\": {}}}",
+                    json_string(field),
+                    json_string(row.result.label()),
+                    row.when,
+                    row.by_tool
+                )
+            })
+            .collect();
+        println!(
+            "{{\n  \"schema\": 1,\n  \"library_id\": {},\n  \"evidence\": [\n{}\n  ]\n}}",
+            json_string(&library.id),
+            rows.join(",\n")
+        );
+        return Ok(0);
+    }
+
+    println!("Library     {}", library.display_name());
+    println!();
+    for field in evidence::FIELDS {
+        let row = record.get(field);
+        let who = if row.result == evidence::Result_::NotChecked {
+            String::new()
+        } else if row.by_tool {
+            "  (checked by LibraryBridge)".to_string()
+        } else {
+            "  (reported by you)".to_string()
+        };
+        println!(
+            "  {:<44} {}{who}",
+            evidence::describe(field),
+            row.result.label()
+        );
+    }
+    println!();
+    println!("Record an answer with, for example:");
+    println!("    librarybridge evidence {} --record launch=yes", library.id);
+    Ok(0)
 }
 
 // ------------------------------------------------------------- storage
@@ -929,6 +1012,11 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
     record::sync(&library.steamapps)?;
     // The operation is complete, so its record has nothing left to report.
     record::Record::clear(&library.id);
+
+    // The copy is established. Everything about the game working is not, and
+    // has to be established again now the data has moved.
+    let _ = evidence::Evidence::record(&library.id, "files", evidence::Result_::Worked, true);
+    evidence::Evidence::invalidate(&library.id);
 
     emit(
         options,

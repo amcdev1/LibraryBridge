@@ -3,6 +3,7 @@
 
 mod commands;
 mod discover;
+mod evidence;
 mod fsops;
 mod json;
 mod lock;
@@ -33,6 +34,7 @@ COMMANDS
                          move the original aside, and link to the copy
     undo <library>       Copy the data back and remove the link
     storage              Show what is stored and how much space it uses
+    evidence <library>   Show what has been established, and record an answer
 
     <library> is an id from `scan`, or a library path.
 
@@ -55,6 +57,7 @@ OPTIONS
     -y, --yes            Do not ask for confirmation
     --force              Proceed past a filesystem that needs no repair
     --expect PLAN        Apply only if the plan is still the one reviewed
+    --record FIELD=ANSWER  Record evidence, for example launch=yes
     --keep-destination   On a destination conflict, keep the data already at
                          the destination and set the game drive copy aside
     --replace-destination  The other way round. Both copies are always kept.
@@ -90,6 +93,7 @@ fn main() -> ExitCode {
         entry: None,
         all: false,
         expect: None,
+        record: None,
         keep_destination: false,
         replace_destination: false,
     };
@@ -115,7 +119,7 @@ fn main() -> ExitCode {
             "--keep-destination" => options.keep_destination = true,
             "--replace-destination" => options.replace_destination = true,
             "--steam-root" | "--root" | "--candidate" | "--output" | "--plan" | "--entry"
-            | "--expect" => {
+            | "--expect" | "--record" => {
                 index += 1;
                 let Some(value) = arguments.get(index) else {
                     return usage_error(&format!("{argument} needs a value"));
@@ -129,6 +133,7 @@ fn main() -> ExitCode {
                     "--output" => options.output = Some(PathBuf::from(original)),
                     "--plan" => options.plan = Some(PathBuf::from(original)),
                     "--expect" => options.expect = Some(value.clone()),
+                    "--record" => options.record = Some(value.clone()),
                     _ => options.entry = Some(value.clone()),
                 }
             }
@@ -160,6 +165,14 @@ fn main() -> ExitCode {
     let result = match command {
         "scan" => commands::scan(&options),
         "storage" => commands::storage(&options),
+        "evidence" => match positional.get(1) {
+            Some(reference) => commands::evidence(&options, reference),
+            None => {
+                return usage_error(
+                    "`evidence` needs a library. Run `librarybridge scan` to see the list.",
+                )
+            }
+        },
         "lutris" => lutris_cmd::dispatch(&options, &positional[1..]),
         "fix" | "undo" => match positional.get(1) {
             Some(reference) => {
@@ -212,6 +225,7 @@ fn misplaced_flags(positional: &[String], arguments: &[String]) -> Option<String
             "--replace-destination",
         ],
         ("undo", _) => &["-y", "--yes"],
+        ("evidence", _) => &["--record"],
         ("lutris", "scan") => &["--root", "--all"],
         ("lutris", "detect") => &[],
         ("lutris", "plan") => &["--root", "--candidate", "--output"],

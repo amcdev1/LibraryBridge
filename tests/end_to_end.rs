@@ -1145,3 +1145,54 @@ fn scan_reports_whether_it_saw_everything() {
     let json = fixture.run_ok(&["scan", "--json"]);
     assert!(json.contains("\"complete\": false"), "{json}");
 }
+
+/// A repair establishes that the files copied. It establishes nothing about
+/// whether a game runs, and the two must not be conflated.
+#[test]
+fn a_repair_records_only_what_it_established() {
+    let fixture = Fixture::new("evidence");
+    fixture.make_prefix();
+    let id = fixture.library_id();
+    fixture.run_ok(&["fix", &id, "--yes", "--force"]);
+
+    let text = fixture.run_ok(&["evidence", &id]);
+    assert!(text.contains("Files copied and checked"), "{text}");
+    assert!(text.contains("checked by LibraryBridge"), "{text}");
+    // Three things a repair cannot possibly know.
+    assert_eq!(text.matches("not checked").count(), 3, "{text}");
+
+    // A person can answer them, and the answer is marked as theirs.
+    fixture.run_ok(&["evidence", &id, "--record", "launch=yes"]);
+    let text = fixture.run_ok(&["evidence", &id]);
+    assert!(text.contains("reported by you"), "{text}");
+    assert_eq!(text.matches("not checked").count(), 2, "{text}");
+
+    // Nonsense is refused rather than stored.
+    let output = fixture.run(&["evidence", &id, "--record", "launch=maybe"]);
+    assert!(!output.status.success());
+    let output = fixture.run(&["evidence", &id, "--record", "teleport=yes"]);
+    assert!(!output.status.success());
+}
+
+/// Moving the data again makes every answer about the game stale, because it
+/// was answered about a different arrangement.
+#[test]
+fn moving_the_data_again_clears_answers_about_the_game() {
+    let fixture = Fixture::new("stale-evidence");
+    fixture.make_prefix();
+    let id = fixture.library_id();
+    fixture.run_ok(&["fix", &id, "--yes", "--force"]);
+    fixture.run_ok(&["evidence", &id, "--record", "launch=yes"]);
+    fixture.run_ok(&["evidence", &id, "--record", "save=yes"]);
+
+    fixture.run_ok(&["undo", &id, "--yes"]);
+    fixture.run_ok(&["fix", &id, "--yes", "--force", "--replace-destination"]);
+
+    let text = fixture.run_ok(&["evidence", &id]);
+    assert_eq!(
+        text.matches("not checked").count(),
+        3,
+        "answers about the game survived the data moving:\n{text}"
+    );
+    assert!(text.contains("Files copied and checked"), "{text}");
+}
