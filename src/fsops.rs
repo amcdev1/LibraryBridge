@@ -8,6 +8,7 @@
 //! 2. Nothing is ever removed from the source. This module only reads the
 //!    source and writes to a fresh destination.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -26,6 +27,12 @@ pub enum Kind {
         size: u64,
         digest: Option<[u8; 32]>,
         links: u64,
+        /// Device and inode. Two entries sharing these are one file with two
+        /// names, and the copy has to reproduce that rather than duplicate it.
+        identity: (u64, u64),
+        /// Bytes actually allocated. Less than `size` means the file is
+        /// stored sparsely and a plain copy will occupy more room.
+        allocated: u64,
     },
     Symlink {
         target: PathBuf,
@@ -57,20 +64,26 @@ pub struct Manifest {
     pub dirs: usize,
     pub files: usize,
     pub symlinks: usize,
-    /// Files whose link count is above one. They are copied as independent
-    /// files, so the caller can warn that the sharing is not preserved.
+    /// Files that share their contents with another name.
     pub hard_linked: Vec<PathBuf>,
+    /// Files stored with holes, and how many bytes those holes account for.
+    pub sparse: Vec<PathBuf>,
+    pub sparse_saving: u64,
 }
 
 impl Manifest {
     fn push(&mut self, entry: Entry) {
         match &entry.kind {
             Kind::Dir => self.dirs += 1,
-            Kind::File { size, links, .. } => {
+            Kind::File { size, links, allocated, .. } => {
                 self.files += 1;
                 self.bytes += size;
                 if *links > 1 {
                     self.hard_linked.push(entry.rel.clone());
+                }
+                if allocated < size {
+                    self.sparse.push(entry.rel.clone());
+                    self.sparse_saving += size - allocated;
                 }
             }
             Kind::Symlink { .. } => self.symlinks += 1,
@@ -144,6 +157,8 @@ fn walk(
                     size: meta.len(),
                     digest,
                     links: meta.nlink(),
+                    identity: (meta.dev(), meta.ino()),
+                    allocated: meta.blocks() * 512,
                 },
                 mode,
                 mtime,
@@ -197,17 +212,20 @@ pub fn copy_tree(
     fs::create_dir_all(dst).map_err(|e| format!("{}: {e}", dst.display()))?;
 
     let mut manifest = Manifest::default();
-    copy_dir(src, dst, Path::new(""), 0, &mut manifest, progress)?;
+    let mut links: HashMap<(u64, u64), (PathBuf, [u8; 32])> = HashMap::new();
+    copy_dir(src, dst, Path::new(""), 0, &mut manifest, &mut links, progress)?;
     manifest.entries.sort_by(|a, b| a.rel.cmp(&b.rel));
     Ok(manifest)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn copy_dir(
     src: &Path,
     dst: &Path,
     rel: &Path,
     depth: usize,
     out: &mut Manifest,
+    links: &mut HashMap<(u64, u64), (PathBuf, [u8; 32])>,
     progress: &mut dyn FnMut(&Path, u64),
 ) -> Result<(), String> {
     if depth > MAX_DEPTH {
@@ -238,6 +256,7 @@ fn copy_dir(
             let target = fs::read_link(&from).map_err(|e| format!("{}: {e}", from.display()))?;
             std::os::unix::fs::symlink(&target, &to)
                 .map_err(|e| format!("{}: {e}", to.display()))?;
+            copy_times(&from, &to)?;
             out.push(Entry {
                 rel: child_rel,
                 kind: Kind::Symlink { target },
@@ -252,11 +271,34 @@ fn copy_dir(
                 mode,
                 mtime,
             });
-            copy_dir(src, dst, &child_rel, depth + 1, out, progress)?;
+            copy_dir(src, dst, &child_rel, depth + 1, out, links, progress)?;
             fs::set_permissions(&to, fs::Permissions::from_mode(mode & 0o7777))
                 .map_err(|e| format!("{}: {e}", to.display()))?;
+            // After the children, because writing them moves the directory's
+            // own modification time.
+            copy_times(&from, &to)?;
         } else if file_type.is_file() {
-            let digest = copy_file(&from, &to)?;
+            let identity = (meta.dev(), meta.ino());
+            // A file with more than one name is copied once and linked again,
+            // so the copy holds one file with two names, as the source did.
+            let digest = if meta.nlink() > 1 {
+                match links.get(&identity) {
+                    Some((first, digest)) => {
+                        fs::hard_link(first, &to).map_err(|e| {
+                            format!("{} -> {}: {e}", first.display(), to.display())
+                        })?;
+                        *digest
+                    }
+                    None => {
+                        let digest = copy_file(&from, &to)?;
+                        links.insert(identity, (to.clone(), digest));
+                        digest
+                    }
+                }
+            } else {
+                copy_file(&from, &to)?
+            };
+            copy_times(&from, &to)?;
             progress(&child_rel, meta.len());
             out.push(Entry {
                 rel: child_rel,
@@ -264,6 +306,8 @@ fn copy_dir(
                     size: meta.len(),
                     digest: Some(digest),
                     links: meta.nlink(),
+                    identity,
+                    allocated: meta.blocks() * 512,
                 },
                 mode,
                 mtime,
@@ -277,6 +321,33 @@ fn copy_dir(
         }
     }
     Ok(())
+}
+
+/// Carry a file's access and modification times across, to the precision the
+/// destination filesystem keeps. Applied without following links, so a
+/// symlink gets its own times rather than its target's.
+fn copy_times(from: &Path, to: &Path) -> Result<(), String> {
+    use rustix::fs::{utimensat, AtFlags, Timestamps};
+
+    let meta = fs::symlink_metadata(from).map_err(|e| format!("{}: {e}", from.display()))?;
+    let stamp = |time: std::io::Result<std::time::SystemTime>| match time {
+        Ok(time) => match time.duration_since(std::time::UNIX_EPOCH) {
+            Ok(since) => rustix::fs::Timespec {
+                tv_sec: since.as_secs() as i64,
+                tv_nsec: since.subsec_nanos() as _,
+            },
+            // Before 1970. Rare, and not worth failing a repair over.
+            Err(_) => rustix::fs::Timespec { tv_sec: 0, tv_nsec: 0 },
+        },
+        Err(_) => rustix::fs::Timespec { tv_sec: 0, tv_nsec: 0 },
+    };
+
+    let times = Timestamps {
+        last_access: stamp(meta.accessed()),
+        last_modification: stamp(meta.modified()),
+    };
+    utimensat(rustix::fs::CWD, to, &times, AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(|e| format!("{}: could not set timestamps: {e}", to.display()))
 }
 
 fn copy_file(from: &Path, to: &Path) -> Result<[u8; 32], String> {
@@ -406,11 +477,51 @@ pub fn verify_against(expected: &Manifest, actual: &Manifest) -> Result<(), Vec<
         ));
     }
 
+    // Files that shared their contents in the source must still share them
+    // in the copy. Matching bytes is not the same as still being one file.
+    problems.extend(compare_link_groups(expected, actual));
+
     if problems.is_empty() {
         Ok(())
     } else {
         Err(problems)
     }
+}
+
+/// Group entries by the file they are, then check the copy groups the same
+/// paths together. A relationship, not a checksum.
+fn compare_link_groups(expected: &Manifest, actual: &Manifest) -> Vec<String> {
+    fn groups(manifest: &Manifest) -> Vec<Vec<&Path>> {
+        let mut by_file: HashMap<(u64, u64), Vec<&Path>> = HashMap::new();
+        for entry in &manifest.entries {
+            if let Kind::File { identity, links, .. } = &entry.kind {
+                if *links > 1 {
+                    by_file.entry(*identity).or_default().push(&entry.rel);
+                }
+            }
+        }
+        let mut shapes: Vec<Vec<&Path>> = by_file
+            .into_values()
+            .map(|mut paths| {
+                paths.sort();
+                paths
+            })
+            .collect();
+        shapes.sort();
+        shapes
+    }
+
+    let wanted = groups(expected);
+    let got = groups(actual);
+    if wanted == got {
+        return Vec::new();
+    }
+    vec![format!(
+        "shared files were not reproduced as shared: the source has {} group(s) of names \
+         pointing at one file, the copy has {}",
+        wanted.len(),
+        got.len()
+    )]
 }
 
 /// Detect a source that changed while it was being copied. Compares shape,

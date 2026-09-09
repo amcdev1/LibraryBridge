@@ -140,6 +140,12 @@ fn main() -> ExitCode {
         index += 1;
     }
 
+    // A flag that means nothing to the command asked for is a mistake worth
+    // reporting, not something to ignore quietly.
+    if let Some(problem) = misplaced_flags(&positional, &arguments) {
+        return usage_error(&problem);
+    }
+
     if options.keep_destination && options.replace_destination {
         return usage_error(
             "--keep-destination and --replace-destination cannot both be given: they are              opposite answers to the same question.",
@@ -187,6 +193,48 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Flags each command accepts, beyond the ones every command takes.
+fn misplaced_flags(positional: &[String], arguments: &[String]) -> Option<String> {
+    const EVERYWHERE: [&str; 4] = ["--json", "-n", "--dry-run", "--steam-root"];
+    let command = positional.first().map(String::as_str)?;
+    let sub = positional.get(1).map(String::as_str).unwrap_or("");
+
+    let allowed: &[&str] = match (command, sub) {
+        ("scan", _) | ("storage", _) => &[],
+        ("fix", _) => &[
+            "-y",
+            "--yes",
+            "--force",
+            "--expect",
+            "--keep-destination",
+            "--replace-destination",
+        ],
+        ("undo", _) => &["-y", "--yes"],
+        ("lutris", "scan") => &["--root", "--all"],
+        ("lutris", "detect") => &[],
+        ("lutris", "plan") => &["--root", "--candidate", "--output"],
+        ("lutris", "import") => &["--plan", "-y", "--yes"],
+        ("lutris", "forget") => &["--entry"],
+        _ => return None,
+    };
+
+    let offender = arguments
+        .iter()
+        .filter(|argument| argument.starts_with('-'))
+        .find(|argument| {
+            !EVERYWHERE.contains(&argument.as_str()) && !allowed.contains(&argument.as_str())
+        })?;
+
+    let name = if sub.is_empty() {
+        command.to_string()
+    } else {
+        format!("{command} {sub}")
+    };
+    Some(format!(
+        "`{name}` does not take {offender}. Run `librarybridge --help` to see what it does take."
+    ))
 }
 
 fn usage_error(message: &str) -> ExitCode {

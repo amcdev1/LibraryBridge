@@ -223,8 +223,45 @@ fn advice(library: &Library, report: &state::Report, mount: Option<&system::Moun
     }
 }
 
+/// Why a library cannot be repaired as things stand, or `None` if it can.
+/// The same judgement the window needs, made once, here.
+fn repair_blocker(library: &Library, report: &state::Report) -> Option<String> {
+    match report.state {
+        State::NotRepaired { .. } | State::InterruptedAwaitingLink { .. } => {}
+        State::Repaired { .. } => return Some("it is already repaired".to_string()),
+        State::Disconnected => return Some("the drive is not connected".to_string()),
+        State::NoCompatdata => return Some("there is no Proton data to move yet".to_string()),
+        State::DanglingLink { .. } => {
+            return Some("its link points at something that is not there".to_string())
+        }
+        State::LinkedElsewhere { .. } => {
+            return Some("it is already linked somewhere this tool did not choose".to_string())
+        }
+        State::Unusable { .. } => return Some("it needs attention first".to_string()),
+    }
+    match system::mount_for(&library.path).map(|m| m.capability) {
+        Some(Capability::NoSymlinks) => {
+            Some("its filesystem has no symlinks, so this repair cannot work there".to_string())
+        }
+        Some(Capability::Native) => Some("it is already on a Linux filesystem".to_string()),
+        Some(Capability::NeedsRepair) => None,
+        _ => Some("its filesystem could not be identified".to_string()),
+    }
+}
+
 fn scan_json(libraries: &[Library], warnings: &[String]) -> String {
-    let mut out = String::from("{\n  \"schema\": 1,\n  \"libraries\": [\n");
+    let mut out = String::from("{\n  \"schema\": 1,\n");
+    out.push_str(&format!(
+        "  \"tool_version\": {},\n",
+        json_string(env!("CARGO_PKG_VERSION"))
+    ));
+    // A scan that could not read everything is not the same as a scan that
+    // found nothing, and a caller has to be able to tell them apart.
+    out.push_str(&format!("  \"complete\": {},\n", warnings.is_empty()));
+    out.push_str(&format!(
+        "  \"libraries_seen\": {},\n  \"libraries\": [\n",
+        libraries.len()
+    ));
     for (index, library) in libraries.iter().enumerate() {
         let report = state::inspect(library);
         let mount = system::mount_for(&library.path);
@@ -265,7 +302,16 @@ fn scan_json(libraries: &[Library], warnings: &[String]) -> String {
             .iter()
             .map(|b| json_string(&b.to_string_lossy()))
             .collect();
-        out.push_str(&format!("      \"backups\": [{}]\n", backups.join(", ")));
+        out.push_str(&format!("      \"backups\": [{}],\n", backups.join(", ")));
+        let blocker = repair_blocker(library, &report);
+        out.push_str(&format!("      \"eligible\": {},\n", blocker.is_none()));
+        out.push_str(&format!(
+            "      \"blocking_reason\": {}\n",
+            match &blocker {
+                Some(reason) => json_string(reason),
+                None => "null".to_string(),
+            }
+        ));
         out.push_str(if index + 1 == libraries.len() {
             "    }\n"
         } else {
@@ -295,6 +341,30 @@ fn json_string(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// One line of machine-readable progress.
+///
+/// A frontend needs to know which phase the work is in, because that is what
+/// decides whether stopping is safe. Reading that out of printed prose is the
+/// coupling this design exists to avoid, so the phases are emitted as data.
+///
+/// Written as one JSON object per line, so a reader can act on each as it
+/// arrives rather than waiting for a document to close.
+fn emit(options: &Options, event: &str, fields: &[(&str, String)]) {
+    if !options.json {
+        return;
+    }
+    let mut line = format!("{{\"event\": {}", json_string(event));
+    for (key, value) in fields {
+        line.push_str(&format!(", {}: {value}", json_string(key)));
+    }
+    line.push('}');
+    println!("{line}");
+}
+
+fn number(value: u64) -> String {
+    value.to_string()
 }
 
 // ------------------------------------------------------------- storage
@@ -513,6 +583,8 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
 
     let source_exists = matches!(report.state, State::NotRepaired { .. });
     let mut hard_linked = 0usize;
+    let mut sparse = 0usize;
+    let mut sparse_saving = 0u64;
     let (source_entries, source_bytes) = if source_exists {
         // One walk, used for the size, the link check and the plan identity.
         let inventory = fsops::inventory(&library.compatdata, false)?;
@@ -533,6 +605,8 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
             ));
         }
         hard_linked = inventory.hard_linked.len();
+        sparse = inventory.sparse.len();
+        sparse_saving = inventory.sparse_saving;
         (inventory.entries.len(), inventory.bytes)
     } else {
         (0, 0)
@@ -561,7 +635,9 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
     // disk exactly as it found it, so the space check asks about the nearest
     // parent that already exists.
     let available = system::free_bytes(&existing_ancestor(&target_parent));
-    let needed = source_bytes + GROWTH_RESERVE;
+    // Holes in the source become real bytes in the copy, so the requirement is
+    // the logical size plus what filling those holes costs, plus the reserve.
+    let needed = source_bytes + sparse_saving + GROWTH_RESERVE;
     match available {
         Some(free) if free < needed => {
             return Err(format!(
@@ -596,7 +672,10 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
     } else {
         (0, Vec::new())
     };
-    if options.json {
+    // `--json` on a dry run asks for the plan as data. `--json` on an apply
+    // asks for the event stream instead, which the rest of this function
+    // emits line by line.
+    if options.json && options.dry_run {
         print!(
             "{}",
             plan_json(
@@ -629,8 +708,13 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
         );
     }
     if hard_linked > 0 {
+        println!("Shared      {hard_linked} files have more than one name; the copy keeps that");
+    }
+    if sparse > 0 {
         println!(
-            "Note        {hard_linked} files share storage with another file; the copy gives each its own"
+            "Sparse      {sparse} files are stored with holes. The copy fills them, so it \
+             will need up to {} more room than the size above.",
+            human_bytes(sparse_saving)
         );
     }
     println!(
@@ -688,6 +772,8 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
 
     // --- apply ---------------------------------------------------------
 
+    emit(options, "preparing", &[]);
+
     // The one write that has to happen on the game drive before the copy:
     // proving the filesystem can hold the link the repair depends on.
     fsops::probe_symlink_support(&library.steamapps)?;
@@ -713,16 +799,31 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
         // left exactly where it is: its name does not prove who made it.
         let staging = library.new_staging();
 
-        println!();
-        println!("Copying...");
+        if !options.json {
+            println!();
+            println!("Copying...");
+        }
+        emit(
+            options,
+            "copying",
+            &[("total_bytes", number(source_bytes))],
+        );
         let mut copied_files = 0usize;
         let mut copied_bytes = 0u64;
+        let json = options.json;
         let mut progress = |_path: &Path, bytes: u64| {
             copied_files += 1;
             copied_bytes += bytes;
             if copied_files % 250 == 0 {
-                eprint!("\r  {copied_files} files, {}", human_bytes(copied_bytes));
-                let _ = std::io::stderr().flush();
+                if json {
+                    println!(
+                        "{{\"event\": \"progress\", \"files\": {copied_files}, \"bytes\": {copied_bytes}}}"
+                    );
+                    let _ = std::io::stdout().flush();
+                } else {
+                    eprint!("\r  {copied_files} files, {}", human_bytes(copied_bytes));
+                    let _ = std::io::stderr().flush();
+                }
             }
         };
         let source_manifest = fsops::copy_tree(&library.compatdata, &staging, &mut progress)?;
@@ -741,6 +842,7 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
             );
         }
 
+        emit(options, "verifying", &[]);
         println!("Checking every file...");
         let copy_manifest = fsops::inventory(&staging, true)?;
         if let Err(problems) = fsops::verify_against(&source_manifest, &copy_manifest) {
@@ -775,6 +877,9 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
         // the next one starts. A flush that fails is reported, not ignored:
         // the record that does not survive a power cut is exactly the one
         // recovery would have needed.
+        // From here the game drive is touched, and stopping is no longer free.
+        emit(options, "committing", &[]);
+
         let backup = state::new_backup_path(&library.steamapps);
         let mut operation = record::Record {
             library_id: library.id.clone(),
@@ -824,6 +929,21 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
     record::sync(&library.steamapps)?;
     // The operation is complete, so its record has nothing left to report.
     record::Record::clear(&library.id);
+
+    emit(
+        options,
+        "applied",
+        &[
+            ("destination", json_string(&target.to_string_lossy())),
+            (
+                "backup",
+                json_string(&state::find_backups(&library.steamapps)
+                    .first()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default()),
+            ),
+        ],
+    );
 
     println!();
     println!("Done.");
@@ -1270,8 +1390,8 @@ fn plan_json(
     }
     if hard_linked > 0 {
         consequences.push(format!(
-            "{hard_linked} files currently share storage with another file. Each gets its own \
-             copy, so the result uses more space than the source."
+            "{hard_linked} files have more than one name. The copy keeps them as one file \
+             with several names, as they are now."
         ));
     }
 

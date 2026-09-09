@@ -114,11 +114,32 @@ pub fn run(arguments: &[String]) -> Result<String, String> {
 pub struct Scan {
     pub libraries: Vec<Library>,
     pub warnings: Vec<String>,
+    /// False when the scan could not read everything. An empty list and an
+    /// unreadable one must not look the same.
+    pub complete: bool,
 }
+
+/// The output schema this window knows how to read.
+const SCHEMA: u64 = 1;
 
 pub fn libraries() -> Result<Scan, String> {
     let text_out = run(&["scan".into(), "--json".into()])?;
     let parsed: Value = serde_json::from_str(&text_out).map_err(|e| e.to_string())?;
+
+    // Two binaries that ship together can still be mismatched by a partial
+    // install. Say so plainly rather than failing somewhere further in.
+    match parsed.get("schema").and_then(Value::as_u64) {
+        Some(SCHEMA) => {}
+        other => {
+            return Err(format!(
+                "this window reads version {SCHEMA} of the command line tool's output, and \
+                 {} reports version {}. They are from different builds; install them together.",
+                binary().display(),
+                other.map(|v| v.to_string()).unwrap_or_else(|| "an unknown".to_string())
+            ))
+        }
+    }
+
     let rows = parsed
         .get("libraries")
         .and_then(Value::as_array)
@@ -156,7 +177,15 @@ pub fn libraries() -> Result<Scan, String> {
                 .unwrap_or_default(),
         })
         .collect();
-    Ok(Scan { libraries, warnings })
+    let complete = parsed
+        .get("complete")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    Ok(Scan {
+        libraries,
+        warnings,
+        complete,
+    })
 }
 
 pub fn candidates(roots: &[String], include_known: bool) -> Result<Vec<Candidate>, String> {
@@ -229,6 +258,61 @@ pub fn lutris_status() -> Result<String, String> {
 
 // ---------------------------------------------------------------- background
 
+/// A phase of a running operation, as the tool reports it.
+///
+/// Which phase the work is in decides whether stopping is safe, so it arrives
+/// as data rather than being inferred from printed text.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Phase {
+    Preparing,
+    Copying { total_bytes: u64 },
+    Progress { files: u64, bytes: u64 },
+    Verifying,
+    Committing,
+    Applied,
+}
+
+impl Phase {
+    /// Everything before the first change to the game drive can be stopped
+    /// freely: the original has not been touched.
+    pub fn can_stop(&self) -> bool {
+        matches!(
+            self,
+            Phase::Preparing | Phase::Copying { .. } | Phase::Progress { .. } | Phase::Verifying
+        )
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Phase::Preparing => "Checking the drive",
+            Phase::Copying { .. } | Phase::Progress { .. } => "Copying",
+            Phase::Verifying => "Checking every file",
+            Phase::Committing => "Switching over",
+            Phase::Applied => "Finished",
+        }
+    }
+}
+
+fn parse_event(line: &str) -> Option<Phase> {
+    if !line.starts_with("{\"event\"") {
+        return None;
+    }
+    let value: Value = serde_json::from_str(line).ok()?;
+    let count = |key: &str| value.get(key).and_then(Value::as_u64).unwrap_or(0);
+    Some(match value.get("event")?.as_str()? {
+        "preparing" => Phase::Preparing,
+        "copying" => Phase::Copying { total_bytes: count("total_bytes") },
+        "progress" => Phase::Progress { files: count("files"), bytes: count("bytes") },
+        "verifying" => Phase::Verifying,
+        "committing" => Phase::Committing,
+        "applied" => Phase::Applied,
+        _ => return None,
+    })
+}
+
+/// A running child, held so the window can stop it.
+pub type Running = std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>;
+
 /// Messages from a worker thread back to the window.
 pub enum Update {
     Libraries(Result<Scan, String>),
@@ -238,6 +322,8 @@ pub enum Update {
     Lutris(Result<String, String>),
     /// One line of output from a running command.
     Line(String),
+    /// A phase change or progress report from a running command.
+    Event(Phase),
     /// A command finished. The bool says whether it succeeded.
     Done(bool),
 }
@@ -251,7 +337,7 @@ where
 
 /// Run a command, sending each line of output as it appears so the window can
 /// show progress rather than freezing until the copy finishes.
-pub fn stream(sender: &Sender<Update>, arguments: &[String]) {
+pub fn stream(sender: &Sender<Update>, arguments: &[String], running: &Running) {
     let mut child = match Command::new(binary())
         .args(arguments)
         .stdout(Stdio::piped())
@@ -283,16 +369,36 @@ pub fn stream(sender: &Sender<Update>, arguments: &[String]) {
         })
     });
 
-    if let Some(stdout) = child.stdout.take() {
+    let stdout = child.stdout.take();
+    // Hand the child over so the window can stop it. Taking the pipes first
+    // means the reading loops never need the lock.
+    if let Ok(mut slot) = running.lock() {
+        *slot = Some(child);
+    }
+
+    if let Some(stdout) = stdout {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let _ = sender.send(Update::Line(line));
+            match parse_event(&line) {
+                Some(phase) => {
+                    let _ = sender.send(Update::Event(phase));
+                }
+                None => {
+                    let _ = sender.send(Update::Line(line));
+                }
+            }
         }
     }
     if let Some(errors) = errors {
         let _ = errors.join();
     }
 
-    let ok = child.wait().map(|status| status.success()).unwrap_or(false);
+    let ok = running
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+        .and_then(|mut child| child.wait().ok())
+        .map(|status| status.success())
+        .unwrap_or(false);
     let _ = sender.send(Update::Done(ok));
 }
 

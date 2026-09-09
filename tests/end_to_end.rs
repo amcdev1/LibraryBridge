@@ -1040,3 +1040,108 @@ fn undo_refuses_a_relative_link_that_would_change_meaning() {
     assert!(fs::symlink_metadata(fixture.compatdata()).unwrap().file_type().is_symlink());
     assert_eq!(fs::read(fixture.save_file(&fixture.compatdata())).unwrap(), b"OLD SAVE");
 }
+
+/// Two names for one file must still be two names for one file afterwards,
+/// and a file's timestamps must survive the move.
+#[test]
+fn hard_links_and_timestamps_survive_the_copy() {
+    let fixture = Fixture::new("metadata");
+    fixture.make_prefix();
+
+    let prefix = fixture.compatdata().join(format!("{APPID}/pfx"));
+    let original = prefix.join("drive_c/shared.dll");
+    fs::write(&original, vec![3u8; 20_000]).unwrap();
+    fs::hard_link(&original, prefix.join("drive_c/windows/shared.dll")).unwrap();
+
+    let before = fs::metadata(&original).unwrap();
+    let before_mtime = before.modified().unwrap();
+    let before_inode = std::os::unix::fs::MetadataExt::ino(&before);
+
+    let id = fixture.library_id();
+    let text = fixture.run_ok(&["fix", &id, "--yes", "--force"]);
+    assert!(text.contains("have more than one name"), "{text}");
+
+    let target = fs::read_link(fixture.compatdata()).unwrap();
+    let one = target.join(format!("{APPID}/pfx/drive_c/shared.dll"));
+    let two = target.join(format!("{APPID}/pfx/drive_c/windows/shared.dll"));
+
+    let one_meta = fs::metadata(&one).unwrap();
+    let two_meta = fs::metadata(&two).unwrap();
+    assert_eq!(
+        std::os::unix::fs::MetadataExt::ino(&one_meta),
+        std::os::unix::fs::MetadataExt::ino(&two_meta),
+        "the copy duplicated a shared file instead of sharing it"
+    );
+    assert_ne!(
+        std::os::unix::fs::MetadataExt::ino(&one_meta),
+        before_inode,
+        "the copy is the same file as the source"
+    );
+    assert_eq!(
+        one_meta.modified().unwrap(),
+        before_mtime,
+        "the file's modification time was not preserved"
+    );
+
+    // Directory times too, which have to be set after their contents.
+    let source_dir_mtime = fs::metadata(fixture.backup_dir().join(APPID))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(
+        fs::metadata(target.join(APPID)).unwrap().modified().unwrap(),
+        source_dir_mtime
+    );
+}
+
+/// Phase 2. A flag that means nothing to the command asked for is a mistake,
+/// not something to ignore.
+#[test]
+fn flags_are_checked_against_the_command() {
+    let fixture = Fixture::new("flags");
+    for arguments in [
+        vec!["scan", "--keep-destination"],
+        vec!["scan", "--yes"],
+        vec!["storage", "--force"],
+        vec!["undo", "abc123", "--force"],
+    ] {
+        let output = fixture.run(&arguments);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "accepted {arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("does not take"), "{stderr}");
+    }
+
+    // And the flags that do belong are still accepted.
+    assert!(fixture.run(&["scan", "--json"]).status.success());
+}
+
+/// Phase 2. A scan that could not read everything is not a scan that found
+/// nothing, and the output has to say which happened.
+#[test]
+fn scan_reports_whether_it_saw_everything() {
+    let fixture = Fixture::new("coverage");
+    fixture.make_prefix();
+
+    let json = fixture.run_ok(&["scan", "--json"]);
+    assert!(json.contains("\"complete\": true"), "{json}");
+    assert!(json.contains("\"tool_version\":"), "{json}");
+    assert!(json.contains("\"eligible\":"), "{json}");
+    assert!(json.contains("\"blocking_reason\":"), "{json}");
+
+    // On this host no filesystem identifies, so nothing is eligible and the
+    // reason says so rather than leaving it unexplained.
+    assert!(json.contains("could not be identified"), "{json}");
+
+    fs::write(
+        fixture.steam.join("steamapps/libraryfolders.vdf"),
+        "\"libraryfolders\" {",
+    )
+    .unwrap();
+    let json = fixture.run_ok(&["scan", "--json"]);
+    assert!(json.contains("\"complete\": false"), "{json}");
+}

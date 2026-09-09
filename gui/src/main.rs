@@ -143,6 +143,12 @@ struct App {
     /// swallowed: an empty library list and an unreadable one look identical
     /// otherwise.
     warnings: Vec<String>,
+    scan_complete: bool,
+    /// The phase a running operation is in, and the child running it, so the
+    /// window knows whether stopping is safe and can actually do it.
+    phase: Option<backend::Phase>,
+    running: backend::Running,
+    cancelled: bool,
 
     sender: Sender<Update>,
     receiver: Receiver<Update>,
@@ -198,6 +204,10 @@ impl App {
             plan: None,
             stored: Vec::new(),
             warnings: Vec::new(),
+            scan_complete: true,
+            phase: None,
+            running: backend::Running::default(),
+            cancelled: false,
             sender,
             receiver,
             icon_texture,
@@ -333,17 +343,34 @@ impl App {
             "--dry-run".to_string(),
         ];
         let sender = self.sender.clone();
-        backend::spawn(sender, move |tx| backend::stream(&tx, &arguments));
+        let running = self.running.clone();
+        backend::spawn(sender, move |tx| backend::stream(&tx, &arguments, &running));
     }
 
     fn run(&mut self, arguments: Vec<String>, title: String) {
         self.log.clear();
         self.error = None;
         self.finished = None;
+        self.phase = None;
+        self.cancelled = false;
         self.busy = true;
         self.screen = Screen::Running { title };
         let sender = self.sender.clone();
-        backend::spawn(sender, move |tx| backend::stream(&tx, &arguments));
+        let running = self.running.clone();
+        backend::spawn(sender, move |tx| backend::stream(&tx, &arguments, &running));
+    }
+
+    /// Stop a running operation. Only offered before the game drive is
+    /// touched, so what is left behind is a staging copy the tool will never
+    /// reclaim on its own and the user can delete.
+    fn cancel(&mut self) {
+        self.cancelled = true;
+        if let Ok(mut slot) = self.running.lock() {
+            if let Some(child) = slot.as_mut() {
+                let _ = child.kill();
+            }
+        }
+        self.log.push("[stopped at your request]".to_string());
     }
 
     fn drain(&mut self) {
@@ -352,6 +379,7 @@ impl App {
                 Update::Libraries(Ok(scan)) => {
                     self.libraries = scan.libraries;
                     self.warnings = scan.warnings;
+                    self.scan_complete = scan.complete;
                 }
                 Update::Libraries(Err(message)) => self.error = Some(message),
                 Update::Candidates(Ok(rows)) => {
@@ -367,6 +395,7 @@ impl App {
                 Update::Plan(Err(_)) => self.plan = None,
                 Update::Storage(Ok(rows)) => self.stored = rows,
                 Update::Storage(Err(message)) => self.error = Some(message),
+                Update::Event(phase) => self.phase = Some(phase),
                 Update::Line(line) => {
                     // Bounded, so a long copy cannot grow this without limit.
                     // The tail is what matters, so the head is dropped.
@@ -813,6 +842,9 @@ impl App {
                     action.command().to_string(),
                     id.to_string(),
                     "--yes".to_string(),
+                    // Ask for the phase events, so this screen knows when
+                    // stopping stops being safe.
+                    "--json".to_string(),
                 ];
                 // Quote back the plan that was on screen. If the library has
                 // changed since, the tool refuses rather than applying to
@@ -1209,13 +1241,47 @@ impl App {
         ui.add_space(6.0);
         match self.finished {
             None => {
-                ui.label(
-                    "Working. This runs as a separate program, so closing the window does not \
-                     stop it, and your original stays where it is whatever happens.",
-                );
+                let phase = self.phase.clone();
+                ui.label(match &phase {
+                    Some(phase) => phase.label(),
+                    None => "Starting",
+                });
+                if let Some(backend::Phase::Progress { files, bytes }) = &phase {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{files} files, {}",
+                            backend::human_bytes(*bytes)
+                        ))
+                        .weak(),
+                    );
+                }
+                ui.add_space(6.0);
+
+                let safe = phase.as_ref().map(|p| p.can_stop()).unwrap_or(true);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(safe && !self.cancelled, egui::Button::new("Stop"))
+                        .clicked()
+                    {
+                        self.cancel();
+                    }
+                    ui.label(
+                        egui::RichText::new(if self.cancelled {
+                            "Stopping. Your original has not been touched."
+                        } else if safe {
+                            "Stopping now is safe: nothing on the game drive has changed yet."
+                        } else {
+                            "The switch takes a moment and cannot be interrupted."
+                        })
+                        .weak(),
+                    );
+                });
             }
             Some(true) => {
                 ui.label("Finished.");
+            }
+            Some(false) if self.cancelled => {
+                ui.label("Stopped. Nothing on the game drive was changed.");
             }
             Some(false) => {
                 ui.colored_label(ui.visuals().error_fg_color, "Stopped without finishing.");
