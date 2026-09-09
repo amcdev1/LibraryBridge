@@ -4,24 +4,30 @@
 
 # LibraryBridge
 
-Proton stores its Windows compatibility data beside each Steam library. On an
-NTFS drive that data does not work properly, and on exFAT it cannot work at
-all. LibraryBridge moves that data onto a filesystem that can hold it, leaves
-a symlink where Steam expects to find it, and never deletes your original.
+> Move Steam Proton data off unsupported game-drive filesystems without deleting the original.
 
-It also finds installed games that no launcher knows about, such as GOG
-installs and standalone Windows games sitting on the same drive, and can add
-them to Lutris.
+LibraryBridge detects Steam libraries whose Proton compatibility data is on a
+filesystem that cannot safely support it. It copies that data to a Linux
+filesystem, verifies the copy, and leaves a symlink where Steam expects it.
+It can also find standalone and GOG games and prepare them for Lutris.
 
 > LibraryBridge is an independent project and is not affiliated with, endorsed by, or sponsored by Valve Corporation or Steam. Steam and Proton are trademarks of Valve Corporation.
 
-**Status: early Linux preview — not ready for important data.**
+**Early Linux preview — not ready for important data.** The code and automated
+tests are in place, but Linux filesystem behavior, Steam, Proton, Steam Cloud,
+Flatpak Steam, and real Lutris still need acceptance testing.
 
-The command-line tool, Lutris integration, and desktop window are implemented
-and covered by 105 automated tests. Linux filesystem and Steam/Proton behavior
-still need validation on a real Linux machine.
+## At a glance
 
-## Safety first
+| Area | Current status |
+| --- | --- |
+| Target | Linux; macOS is development-only |
+| Steam | Native and Flatpak layouts are not yet Linux-validated |
+| Filesystems | NTFS is unverified; exFAT is intentionally refused |
+| Installation | Source build only; no packaged releases yet |
+| Safety | Read-only scan, dry-run preview, verified copy, retained original |
+
+## How the repair stays safe
 
 **Nothing is ever deleted.** A repair renames your original `compatdata` to
 `compatdata.backup` beside itself and leaves it there.
@@ -32,7 +38,7 @@ That rule is why there is no journal, no transaction log and no registry file.
 Because no step destroys anything, every state an interruption can leave
 behind can be read straight off the disk.
 
-## Install or build from source
+## Installation
 
 There are no packaged downloads yet. Build the two binaries on Linux with
 Rust and Cargo:
@@ -53,7 +59,7 @@ window over the same commands.
 - Start with a disposable library or a backup you have verified separately.
 - Run `scan` and the `--dry-run` preview before applying anything.
 
-## Repairing a Steam library
+## Quick start: repair Steam
 
 ```bash
 ./target/release/librarybridge scan
@@ -86,7 +92,7 @@ you have launched a game and confirmed its saves.
 If a repair is interrupted, run `fix` again. It detects that the original was
 already moved aside and finishes the remaining step.
 
-## Finding games Lutris does not have
+## Optional: import games into Lutris
 
 This reads only the folders you name.
 
@@ -114,7 +120,7 @@ duplicates.
 installer, which shows a dialog per game. No game files, prefixes or saves are
 ever modified.
 
-## The window
+## Desktop window
 
 ```bash
 ./target/release/librarybridge-gui
@@ -129,7 +135,7 @@ the two can never describe an operation differently. Anything the window can
 do is reachable from a terminal, which is what keeps recovery honest when the
 window will not start.
 
-## Current limits
+## Support and limitations
 
 - **Linux is required for real use.** macOS is only a development and test
   environment.
@@ -143,10 +149,12 @@ window will not start.
 
 A successful repair does not prove that a particular game works under Proton.
 
-## Testing
+## Development checks
 
 ```bash
 cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo build --locked --release --workspace
 ```
 
 The automated suite covers parsing, discovery, copying, verification, recovery,
@@ -160,6 +168,17 @@ When reporting an issue, include the LibraryBridge version or commit, Linux
 distribution and kernel, filesystem and mount driver, Steam installation type,
 and the command output with personal paths redacted. Do not attach saves, whole
 Proton prefixes, registry files, or Steam account configuration.
+
+## Contributing
+
+LibraryBridge is in early Linux preview. Keep changes focused, run the
+development checks above, and describe the filesystem and Steam behavior you
+tested. Never include game saves, Proton prefixes, or account data in issues or
+pull requests.
+
+## License
+
+LibraryBridge is available under the MIT License. See [LICENSE](LICENSE).
 
 ## In plain English
 
