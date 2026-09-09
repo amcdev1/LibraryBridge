@@ -2,3 +2,6 @@
 
 # macOS directory metadata, not project content
 .DS_Store
+
+# Internal planning, release, review, and design material (kept locally)
+/assets/branding/concepts/

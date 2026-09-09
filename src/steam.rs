@@ -117,7 +117,7 @@ impl Library {
     ///
     /// The name is unique per operation, so a leftover from an interrupted
     /// run is never mistaken for this run's own working directory and never
-    /// removed to make room. See `docs/DECISIONS.md`.
+    /// removed to make room. This behavior is intentionally conservative.
     pub fn new_staging(&self) -> PathBuf {
         let target = self.effective_target();
         let parent = target.parent().unwrap_or(Path::new("/")).to_path_buf();

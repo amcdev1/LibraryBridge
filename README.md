@@ -15,14 +15,13 @@ them to Lutris.
 
 > LibraryBridge is an independent project and is not affiliated with, endorsed by, or sponsored by Valve Corporation or Steam. Steam and Proton are trademarks of Valve Corporation.
 
-**Status: built and tested, never run on Linux, not ready for release.**
-See [the release status](docs/RELEASE-STATUS.md) for what that means. The command line tool,
-the Lutris integration and the desktop window all work and are covered by 105
-tests. Every filesystem-specific claim is unverified, because NTFS behaviour,
-Steam Cloud, the Steam Linux Runtime container and Flatpak sandboxing all need
-a real Linux machine. See [what is not done](#what-it-does-not-do).
+**Status: early Linux preview — not ready for important data.**
 
-## The one design rule
+The command-line tool, Lutris integration, and desktop window are implemented
+and covered by 105 automated tests. Linux filesystem and Steam/Proton behavior
+still need validation on a real Linux machine.
+
+## Safety first
 
 **Nothing is ever deleted.** A repair renames your original `compatdata` to
 `compatdata.backup` beside itself and leaves it there.
@@ -33,17 +32,26 @@ That rule is why there is no journal, no transaction log and no registry file.
 Because no step destroys anything, every state an interruption can leave
 behind can be read straight off the disk.
 
-## Build
+## Install or build from source
+
+There are no packaged downloads yet. Build the two binaries on Linux with
+Rust and Cargo:
 
 ```bash
-cargo build --release --workspace
+cargo build --locked --release --workspace
 ```
 
-Two binaries land in `target/release`: `librarybridge` and
-`librarybridge-gui`. The command line tool has one dependency, `rustix`, used
-only to open a directory and then work relative to that descriptor, which is
-what stops a path being swapped between the check and the write. The window has
-the rest, and builds separately, so a repair or a recovery never needs it.
+The binaries land in `target/release`: `librarybridge` and
+`librarybridge-gui`. The CLI is the core repair tool; the GUI is an optional
+window over the same commands.
+
+## Before you start
+
+- Use a Linux filesystem for the destination. exFAT is intentionally refused.
+- Close Steam before running a repair. LibraryBridge refuses to mutate a live
+  Steam installation.
+- Start with a disposable library or a backup you have verified separately.
+- Run `scan` and the `--dry-run` preview before applying anything.
 
 ## Repairing a Steam library
 
@@ -64,9 +72,16 @@ Close Steam first; the tool refuses to run while it is open. `fix` copies the
 library's compatdata to your Linux drive, checks every file, renames the
 original aside, and puts a symlink where Steam expects it.
 
-`storage` shows what is kept and how much space it uses. `undo <id>` reverses
-the repair. It copies the *current* data back, not the backup, so
-saves made since the repair are the ones that survive.
+Inspect retained data and reverse a repair when needed:
+
+```bash
+./target/release/librarybridge storage
+./target/release/librarybridge undo <id>
+```
+
+`undo` copies the *current* data back, not the backup, so saves made since the
+repair are the ones that survive. Do not delete a `.backup` directory until
+you have launched a game and confirmed its saves.
 
 If a repair is interrupted, run `fix` again. It detects that the original was
 already moved aside and finishes the remaining step.
@@ -114,70 +129,40 @@ the two can never describe an operation differently. Anything the window can
 do is reachable from a terminal, which is what keeps recovery honest when the
 window will not start.
 
-## What it does not do
+## Current limits
 
-Read [the decision register](docs/DECISIONS.md). It lists everything the
-original plans called for that is not in the code, why, and what would bring
-it back. The short version:
-
-- **exFAT is refused**, not worked around. It has no symlinks.
-- **Nothing is packaged.** No AppImage, no Flatpak, no distribution packages.
-- **Nothing has run on Linux**, so no filesystem claim is verified. A library
-  whose filesystem cannot be identified is refused rather than repaired, which
-  is every non-Linux host.
-- **Two reviews found defects.** Fifteen are fixed with regression tests.
-  What remains open is listed in the decision register.
-- **Timestamps, hard links and sparse files** are not preserved on copy.
+- **Linux is required for real use.** macOS is only a development and test
+  environment.
+- **exFAT is refused**, because it cannot provide the symlink behavior this
+  repair needs.
+- **No packages or release downloads exist yet.** You build from source.
+- **Steam Runtime, Flatpak Steam, real Lutris, Steam Cloud, and NTFS drivers
+  still need Linux acceptance testing.**
+- **Timestamps, hard links, and sparse files** are not preserved on copy.
 - **There is no lock** between two running copies of the tool.
-- The Lutris import **has never met a real Lutris**.
+
+A successful repair does not prove that a particular game works under Proton.
 
 ## Testing
 
 ```bash
-cargo test --workspace
+cargo test --locked --workspace
 ```
 
-105 tests. They cover the Valve KeyValues and JSON parsers, SHA-256 against the
-published vectors, the copier, the state machine, and the command flows end to
-end against synthetic Steam trees. Two safety properties are tested directly:
-discovered files are never executed, and symlinks are never followed while
-scanning or copying. A third covers the case an external review raised: a
-repair interrupted at the moment `compatdata` does not exist, with Steam
-starting before recovery and creating its own.
+The automated suite covers parsing, discovery, copying, verification, recovery,
+symlink safety, dry-run behavior, and the command flows against synthetic Steam
+trees. It does not replace testing on Linux with real filesystems, Steam, Proton,
+Steam Cloud, or Lutris.
 
-What the tests cannot tell you is anything about NTFS, Proton, Steam Cloud or
-Flatpak. Those need the acceptance matrix in the full plan, and a Linux
-machine.
+## Reporting a problem
 
-## Documentation
+When reporting an issue, include the LibraryBridge version or commit, Linux
+distribution and kernel, filesystem and mount driver, Steam installation type,
+and the command output with personal paths redacted. Do not attach saves, whole
+Proton prefixes, registry files, or Steam account configuration.
 
-- [Decision register](docs/DECISIONS.md): what was dropped, why, and what
-  would bring it back. Start here if you are wondering where a feature went.
-- [Design notes](docs/DESIGN-NOTES.md): why the code is shaped the way it is.
-- [Implementation plan](IMPLEMENTATION_PLAN.md): the design that was built.
-- [Lutris integration plan](LUTRIS_INTEGRATION_PLAN.md): the game-finding
-  feature, and the one place its priorities were inverted.
-- [GUI plan](GUI_PLAN.md): the window, its screen specification and what it
-  does not do yet.
-- [Linux handoff](docs/LINUX-HANDOFF.md): everything that has never run, why
-  it matters, and what would settle it. Start here to take this further.
-- [Release status](docs/RELEASE-STATUS.md): where this stands against the
-  release plan, phase by phase.
-- [Release tests](docs/RELEASE-TESTS.md): the scenarios a release candidate has
-  to pass. None have been run.
-- [Long-form plan](IMPLEMENTATION_PLAN_FULL.md): the full treatment of repair
-  strategies, data integrity, Steam integration, testing and release gates.
-  Most of it is deliberately not built; the decision register says which parts
-  and why. It is the reference for a public release.
-- [Distribution guide](DISTRIBUTION.md): packaging and release procedure, none
-  of which has happened yet.
-- [Original draft](proton-bridge.txt): the document this started from.
+## In plain English
 
-## Product promise
-
-Keep your games on the external drive. Put Proton's working data on a
-filesystem it can use. Preserve everything that was already there, and explain
-anything that still needs attention.
-
-This is a filesystem repair tool. A successful repair does not establish that
-any particular game works under Proton.
+Keep your games on the external drive. Put Proton data on a filesystem it can
+use. Preserve what was already there, and explain anything that still needs
+attention.

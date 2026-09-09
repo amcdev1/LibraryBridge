@@ -8,7 +8,7 @@ license = "MIT"
 # One dependency, and only for safety. std has no way to open a directory and
 # then operate relative to that descriptor, which is what stops a path being
 # swapped between the check and the write. rustix wraps those calls without a
-# C toolchain and gives access to openat2 on Linux. See docs/DESIGN-NOTES.md.
+# C toolchain and gives access to openat2 on Linux. See the source comments and tests for the safety rationale.
 [dependencies]
 rustix = { version = "1", features = ["fs"] }
 
