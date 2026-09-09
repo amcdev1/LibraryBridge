@@ -385,6 +385,35 @@ impl App {
         self.log.push("[stopped at your request]".to_string());
     }
 
+    /// What the status bar says. Facts that change, rather than a sentence
+    /// that does not.
+    fn status_line(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+
+        parts.push(match self.libraries.len() {
+            0 if self.busy => "Looking for Steam".to_string(),
+            0 => "No Steam libraries".to_string(),
+            1 => "1 library".to_string(),
+            n => format!("{n} libraries"),
+        });
+        if !self.scan_complete {
+            parts.push("scan incomplete".to_string());
+        }
+        parts.push(match &self.lutris {
+            Some(Ok(_)) => "Lutris found".to_string(),
+            _ => "no Lutris".to_string(),
+        });
+        if !self.roots.is_empty() {
+            let missing = self.candidates.iter().filter(|c| c.eligible).count();
+            parts.push(match missing {
+                0 => "no games to add".to_string(),
+                1 => "1 game to add".to_string(),
+                n => format!("{n} games to add"),
+            });
+        }
+        parts.join(" · ")
+    }
+
     fn drain(&mut self) {
         while let Ok(update) = self.receiver.try_recv() {
             match update {
@@ -536,6 +565,9 @@ impl eframe::App for App {
 
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.add_space(8.0);
+            let measure = ui.available_width().min(940.0);
+            ui.vertical_centered(|ui| {
+            ui.set_max_width(measure);
             ui.horizontal(|ui| {
                 ui.add(
                     egui::Image::from_texture(&self.icon_texture)
@@ -559,32 +591,59 @@ impl eframe::App for App {
                     }
                 });
             });
+            });
             ui.add_space(8.0);
         });
 
-        egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
+        // A status bar, not a slogan. A line that never changes stops being
+        // read within a minute, and an error down here is far from whatever
+        // it broke, so errors are shown in place instead.
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.add_space(6.0);
-            if let Some(error) = &self.error {
-                ui.colored_label(ui.visuals().error_fg_color, error);
-            } else {
-                ui.label(
-                    egui::RichText::new(
-                        "Nothing is ever deleted. A repair keeps your original beside the library.",
-                    )
-                    .weak(),
-                );
-            }
+            let measure = ui.available_width().min(940.0);
+            ui.vertical_centered(|ui| {
+            ui.set_max_width(measure);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(self.status_line()).weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.busy {
+                        ui.label(egui::RichText::new("working").weak());
+                    }
+                });
+            });
+            });
             ui.add_space(6.0);
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| match self.screen.clone() {
-            Screen::Home => self.home(ui),
-            Screen::Libraries => self.libraries_screen(ui),
-            Screen::Review { id, action, title } => self.review_screen(ui, &id, action, &title),
-            Screen::Games => self.games_screen(ui),
-            Screen::Storage => self.storage_screen(ui),
-            Screen::Help => self.help_screen(ui),
-            Screen::Running { title } => self.running_screen(ui, &title),
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let measure = ui.available_width().min(940.0);
+            ui.vertical_centered(|ui| {
+            ui.set_max_width(measure);
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            if let Some(error) = self.error.clone() {
+                ui.add_space(8.0);
+                ui.group(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                    if ui.small_button("Dismiss").clicked() {
+                        self.error = None;
+                    }
+                });
+                ui.add_space(4.0);
+            }
+            match self.screen.clone() {
+                Screen::Home => self.home(ui),
+                Screen::Libraries => self.libraries_screen(ui),
+                Screen::Review { id, action, title } => {
+                    self.review_screen(ui, &id, action, &title)
+                }
+                Screen::Games => self.games_screen(ui),
+                Screen::Storage => self.storage_screen(ui),
+                Screen::Help => self.help_screen(ui),
+                Screen::Running { title } => self.running_screen(ui, &title),
+            }
+            });
+            });
         });
 
         self.maybe_screenshot(ctx);
@@ -664,11 +723,13 @@ impl App {
         ui.add_space(26.0);
         ui.separator();
         ui.add_space(10.0);
+        // The reassurance that used to sit in the footer forever. Said once,
+        // where someone deciding whether to trust this will read it.
         ui.label(
             egui::RichText::new(
-                "Everything here runs the librarybridge command line tool and shows you exactly \
-                 what it is about to do before it does it. A repair keeps working after this \
-                 window is closed.",
+                "Nothing here is ever deleted. A repair copies your data, checks every file, \
+                 and keeps the original on the game drive. It shows you exactly what it will \
+                 do before it does it, and keeps working after this window is closed.",
             )
             .weak(),
         );
@@ -693,7 +754,12 @@ impl App {
         }
 
         if self.libraries.is_empty() {
-            ui.label("No Steam libraries found yet.");
+            ui.label(if self.busy {
+                "Looking for Steam..."
+            } else {
+                "No Steam libraries found."
+            });
+            ui.add_space(6.0);
             if ui.button("Look again").clicked() {
                 self.refresh_libraries();
             }
@@ -704,69 +770,39 @@ impl App {
 
         // A library with two sets of data needs a decision before anything
         // else on this screen matters, so it goes above the list.
-        let conflicts: Vec<backend::Library> = rows
-            .iter()
-            .filter(|l| !l.destination_occupied.is_empty())
-            .cloned()
-            .collect();
-        for library in &conflicts {
+        for library in rows.iter().filter(|l| !l.destination_occupied.is_empty()) {
             self.conflict_row(ui, library);
         }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             for library in &rows {
                 ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.strong(&library.name);
-                        ui.label(
-                            egui::RichText::new(format!("[{}]", library.id))
-                                .weak()
-                                .monospace(),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            // The badge follows what the tool would actually
-                            // do, not the shape of the state name. A library
-                            // on an unidentified filesystem must not read
-                            // "needs repair" when a repair would be refused.
-                            ui.label(if library.eligible {
-                                state_badge(&library.state)
-                            } else {
-                                egui::RichText::new("no repair available").monospace()
-                            });
-                        });
-                    });
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(&library.path).monospace().weak())
-                            .wrap(),
-                    );
-                    ui.add_space(4.0);
-                    field(
-                        ui,
-                        "Filesystem",
-                        if library.filesystem.is_empty() {
-                            "not identified on this system"
-                        } else {
-                            &library.filesystem
-                        },
-                    );
-                    field(ui, "Steam", &library.steam);
-                    field(ui, "State", library.headline());
+                    ui.set_width(ui.available_width());
+
+                    // The name a person recognises, then what is actually
+                    // wrong with it. The path and the id are reference detail
+                    // and live under Details.
+                    ui.label(egui::RichText::new(&library.name).size(17.0).strong());
+                    ui.add_space(2.0);
+                    ui.label(diagnosis(library));
+
                     if !library.connected {
                         ui.label(
                             egui::RichText::new(
-                                "The drive is not connected, so nothing can be done until it is.",
+                                "Connect the drive and it will be checked again.",
                             )
                             .weak(),
                         );
                     }
-                    if !library.target.is_empty() && library.state == "repaired" {
-                        field(ui, "Moved to", &library.target);
-                    }
-                    for backup in &library.backups {
-                        field(ui, "Backup", backup);
-                    }
 
-                    ui.add_space(6.0);
+                    let has_action = match library.state.as_str() {
+                        "repair_available" | "interrupted" => library.eligible,
+                        "repaired" => true,
+                        _ => false,
+                    };
+                    if has_action {
+                        ui.add_space(8.0);
+                    }
                     ui.horizontal(|ui| {
                         let enabled = !self.busy;
                         match library.state.as_str() {
@@ -796,17 +832,36 @@ impl App {
                                     );
                                 }
                             }
-                            _ => {
-                                ui.label(if library.blocking_reason.is_empty() {
-                                    "Nothing to do for this one".to_string()
-                                } else {
-                                    format!("No repair here: {}", library.blocking_reason)
-                                });
-                            }
+                            _ => {}
                         }
                     });
+
+                    ui.add_space(4.0);
+                    egui::CollapsingHeader::new("Details")
+                        .id_salt(&library.id)
+                        .show(ui, |ui| {
+                            field(ui, "Folder", &library.path);
+                            field(
+                                ui,
+                                "Filesystem",
+                                if library.filesystem.is_empty() {
+                                    "not identified on this system"
+                                } else {
+                                    &library.filesystem
+                                },
+                            );
+                            field(ui, "Steam", &library.steam);
+                            field(ui, "State", library.headline());
+                            if !library.target.is_empty() && library.state == "repaired" {
+                                field(ui, "Moved to", &library.target);
+                            }
+                            for backup in &library.backups {
+                                field(ui, "Original kept", backup);
+                            }
+                            field(ui, "Id", &library.id);
+                        });
                 });
-                ui.add_space(8.0);
+                ui.add_space(10.0);
             }
         });
     }
@@ -1068,123 +1123,6 @@ impl App {
         });
     }
 
-    fn candidate_row(&mut self, ui: &mut egui::Ui, id: &str, level: &str) {
-        let Some(candidate) = self.candidate(id).cloned() else {
-            return;
-        };
-        let open = self.expanded.contains(id) || level == "high";
-
-        ui.group(|ui| {
-            ui.horizontal(|ui| {
-                let mut checked = self.selected.contains(id);
-                // A game the tool would refuse cannot be selected here. The
-                // window used to offer Steam rows the command line then
-                // dropped, so the two disagreed about what would happen.
-                if ui
-                    .add_enabled(candidate.eligible, egui::Checkbox::new(&mut checked, ""))
-                    .changed()
-                {
-                    if checked {
-                        self.selected.insert(id.to_string());
-                    } else {
-                        self.selected.remove(id);
-                    }
-                }
-                ui.strong(&candidate.name);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} runner, found from {}",
-                        candidate.runner,
-                        match candidate.source.as_str() {
-                            "gog" => "GOG metadata",
-                            "steam" => "Steam",
-                            "linux" => "a Linux launcher",
-                            _ => "the folder contents",
-                        }
-                    ))
-                    .weak(),
-                );
-                if candidate.in_lutris {
-                    ui.label(egui::RichText::new("already in Lutris").weak());
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let label = if self.expanded.contains(id) {
-                        "Hide"
-                    } else {
-                        "Details"
-                    };
-                    if ui.small_button(label).clicked() {
-                        if self.expanded.contains(id) {
-                            self.expanded.remove(id);
-                        } else {
-                            self.expanded.insert(id.to_string());
-                        }
-                    }
-                });
-            });
-
-            if !candidate.exe.is_empty() {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&candidate.exe).monospace().weak()).wrap(),
-                );
-            }
-            if !candidate.appid.is_empty() {
-                ui.label(egui::RichText::new(format!("Steam app {}", candidate.appid)).weak());
-            }
-            if !candidate.blocking_reason.is_empty() {
-                ui.label(
-                    egui::RichText::new(format!("Cannot be added: {}", candidate.blocking_reason))
-                        .weak(),
-                );
-            }
-            if !candidate.filesystem_warning.is_empty() {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    format!("Warning: {}", candidate.filesystem_warning),
-                );
-                ui.label(
-                    egui::RichText::new("Adding it to Lutris does not fix that on its own.")
-                        .weak(),
-                );
-            }
-
-            if open {
-                ui.add_space(4.0);
-                for reason in &candidate.reasons {
-                    ui.label(egui::RichText::new(format!("• {reason}")).weak());
-                }
-                if !candidate.prefix.is_empty() {
-                    field(ui, "Prefix", &candidate.prefix);
-                }
-            }
-
-            if self.expanded.contains(id) && !candidate.alternatives.is_empty() {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Or it might be one of these:").weak());
-                for alternative in &candidate.alternatives {
-                    if ui.small_button(alternative).clicked() {
-                        self.edit(id).exe = alternative.clone();
-                    }
-                }
-            }
-
-            if self.expanded.contains(id) {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label("Name");
-                    let entry = self.edit(id);
-                    ui.add(egui::TextEdit::singleline(&mut entry.name).desired_width(320.0));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Runs");
-                    let entry = self.edit(id);
-                    ui.add(egui::TextEdit::singleline(&mut entry.exe).desired_width(560.0));
-                });
-            }
-        });
-        ui.add_space(6.0);
-    }
-
     /// Two sets of data exist for one library and only the user can say which
     /// counts. Both are kept whichever is chosen, and neither is preselected.
     fn conflict_row(&mut self, ui: &mut egui::Ui, library: &backend::Library) {
@@ -1247,6 +1185,139 @@ impl App {
         });
         ui.add_space(10.0);
     }
+
+    fn candidate_row(&mut self, ui: &mut egui::Ui, id: &str, level: &str) {
+        let Some(candidate) = self.candidate(id).cloned() else {
+            return;
+        };
+        let open = self.expanded.contains(id);
+        let _ = level;
+
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let mut checked = self.selected.contains(id);
+                // A game the tool would refuse cannot be selected here. The
+                // window used to offer Steam rows the command line then
+                // dropped, so the two disagreed about what would happen.
+                let response = ui.add_enabled(
+                    candidate.eligible,
+                    egui::Checkbox::new(&mut checked, ""),
+                );
+                if response.changed() {
+                    if checked {
+                        self.selected.insert(id.to_string());
+                    } else {
+                        self.selected.remove(id);
+                    }
+                }
+                ui.label(egui::RichText::new(&candidate.name).size(16.0).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .small_button(if open { "Hide" } else { "Details" })
+                        .clicked()
+                    {
+                        if open {
+                            self.expanded.remove(id);
+                        } else {
+                            self.expanded.insert(id.to_string());
+                        }
+                    }
+                });
+            });
+
+            // One line saying what this is and why it is being offered. The
+            // path is reference detail and lives under Details, as it does on
+            // the libraries screen.
+            ui.add_space(2.0);
+            if candidate.eligible {
+                let file = candidate
+                    .exe
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&candidate.exe)
+                    .to_string();
+                ui.label(format!(
+                    "Would run {file} through {}, {}.",
+                    candidate.runner,
+                    match candidate.source.as_str() {
+                        "gog" => "identified from GOG's own metadata",
+                        "linux" => "identified from a native Linux launcher",
+                        "steam" => "listed by Steam",
+                        _ => "chosen from the executables in its folder",
+                    }
+                ));
+            } else {
+                ui.label(format!("Cannot be added. {}.", candidate.blocking_reason));
+            }
+
+            if !candidate.filesystem_warning.is_empty() {
+                ui.add_space(2.0);
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!("Warning: {}.", candidate.filesystem_warning),
+                );
+                ui.label(
+                    egui::RichText::new("Adding it to Lutris does not fix that on its own.")
+                        .weak(),
+                );
+            }
+
+            if candidate.confidence == "low" {
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(
+                        "This one is a guess. Check it under Details before adding it.",
+                    )
+                    .weak(),
+                );
+            }
+
+            if open {
+                ui.add_space(6.0);
+                if !candidate.exe.is_empty() {
+                    field(ui, "Runs", &candidate.exe);
+                }
+                if !candidate.prefix.is_empty() {
+                    field(ui, "Prefix", &candidate.prefix);
+                }
+                if !candidate.appid.is_empty() {
+                    field(ui, "Steam app", &candidate.appid);
+                }
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Why this one:").weak());
+                for reason in &candidate.reasons {
+                    ui.label(egui::RichText::new(format!("• {reason}")).weak());
+                }
+
+                if !candidate.alternatives.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("Or it might be one of these:").weak());
+                    for alternative in &candidate.alternatives {
+                        if ui.small_button(alternative).clicked() {
+                            self.edit(id).exe = alternative.clone();
+                        }
+                    }
+                }
+
+                if candidate.eligible {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Name");
+                        let entry = self.edit(id);
+                        ui.add(egui::TextEdit::singleline(&mut entry.name).desired_width(320.0));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Runs");
+                        let entry = self.edit(id);
+                        ui.add(egui::TextEdit::singleline(&mut entry.exe).desired_width(520.0));
+                    });
+                }
+            }
+        });
+        ui.add_space(8.0);
+    }
+
 
     fn storage_screen(&mut self, ui: &mut egui::Ui) {
         ui.heading("Storage and backups");
@@ -1519,7 +1590,7 @@ impl App {
 fn card(ui: &mut egui::Ui, title: &str, status: &str, explanation: &str, action: &str) -> bool {
     let mut clicked = false;
     ui.group(|ui| {
-        ui.set_width(660.0);
+        ui.set_width(ui.available_width());
         ui.vertical(|ui| {
             ui.label(egui::RichText::new(title).size(19.0).strong());
             ui.add_space(5.0);
@@ -1546,19 +1617,48 @@ fn field(ui: &mut egui::Ui, label: &str, value: &str) {
     });
 }
 
-fn state_badge(state: &str) -> egui::RichText {
-    let text = match state {
-        "repair_available" => "needs repair",
-        "repaired" => "repaired",
-        "interrupted" => "unfinished",
-        "disconnected" => "not connected",
-        "dangling_link" => "broken link",
-        "linked_elsewhere" => "linked by hand",
-        "no_compatdata" => "no Proton data",
-        _ => "check this one",
-    };
-    egui::RichText::new(text).monospace()
+/// One sentence saying what is true of this library, in the words a person
+/// would use. This is the line the row exists to deliver.
+fn diagnosis(library: &backend::Library) -> String {
+    if !library.connected {
+        return "The drive is not connected, so nothing can be checked.".to_string();
+    }
+    match library.state.as_str() {
+        "repair_available" if library.eligible => format!(
+            "Proton stores its working data here, on {}, where it does not work properly.",
+            if library.filesystem.is_empty() {
+                "this filesystem".to_string()
+            } else {
+                library.filesystem.clone()
+            }
+        ),
+        "interrupted" => {
+            "A repair stopped before it finished. Nothing was lost, and it can be \
+             completed."
+                .to_string()
+        }
+        "repaired" => {
+            "Proton's working data has been moved to your Linux drive. Your original is \
+             still on the game drive."
+                .to_string()
+        }
+        "dangling_link" => {
+            "This library points at data that is not there. Nothing will be changed until \
+             it is."
+                .to_string()
+        }
+        "linked_elsewhere" => {
+            "Something already redirects this library's Proton data. It was not set up \
+             here, so it is left alone."
+                .to_string()
+        }
+        _ if !library.blocking_reason.is_empty() => {
+            format!("No repair applies here: {}.", library.blocking_reason)
+        }
+        _ => library.headline().to_string(),
+    }
 }
+
 
 fn confidence_heading(level: &str) -> &'static str {
     match level {

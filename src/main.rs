@@ -153,7 +153,7 @@ fn main() -> ExitCode {
 
     if options.keep_destination && options.replace_destination {
         return usage_error(
-            "--keep-destination and --replace-destination cannot both be given: they are              opposite answers to the same question.",
+            "--keep-destination and --replace-destination cannot both be given: they are opposite answers to the same question.",
         );
     }
 

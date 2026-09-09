@@ -147,7 +147,7 @@ fn matches_existing(candidate: &Candidate, existing: &[Entry]) -> bool {
 fn import_blocker(candidate: &Candidate) -> Option<String> {
     if candidate.source == "steam" {
         return Some(
-            "Lutris lists installed Steam games through its own Steam source, so importing              this would create a second entry for it"
+            "Lutris lists installed Steam games through its own Steam source, so importing this would create a second entry for it"
                 .to_string(),
         );
     }
