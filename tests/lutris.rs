@@ -577,3 +577,57 @@ fn candidate_json_carries_alternatives_and_warnings() {
     assert!(json.contains("\"filesystem_warning\":"), "{json}");
     assert!(json.contains("\"eligible\": true"), "{json}");
 }
+
+/// R17 again, for the other subcommand that writes a file: a dry run must not
+/// produce the plan, only describe it.
+#[test]
+fn lutris_plan_honours_dry_run() {
+    let fixture = Fixture::new("plandry");
+    fixture.exe("Some Game/SomeGame.exe", 2);
+
+    let text = fixture.scan();
+    let start = text.find('[').unwrap() + 1;
+    let id = &text[start..start + 8];
+
+    let output_path = fixture.root.join("should-not-exist.json");
+    let output = fixture.run(&[
+        "lutris",
+        "plan",
+        "--root",
+        fixture.games.to_str().unwrap(),
+        "--candidate",
+        id,
+        "--output",
+        output_path.to_str().unwrap(),
+        "--dry-run",
+    ]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Dry run"), "{stdout}");
+    assert!(stdout.contains("Nothing was written"), "{stdout}");
+    assert!(!output_path.exists(), "the dry run wrote its plan file");
+}
+
+/// The scan reports what it could not read, and that has to reach every
+/// surface. An empty list and an unreadable one must not look the same.
+#[test]
+fn scan_json_reports_what_it_could_not_read() {
+    let fixture = Fixture::new("warnings");
+    let steam = fixture.root.join("Steam");
+    fs::create_dir_all(steam.join("steamapps")).unwrap();
+    // Metadata that cannot be parsed.
+    fs::write(steam.join("steamapps/libraryfolders.vdf"), "\"libraryfolders\" {").unwrap();
+
+    let output = fixture.run(&["--steam-root", steam.to_str().unwrap(), "scan", "--json"]);
+    let json = String::from_utf8_lossy(&output.stdout);
+    assert!(json.contains("\"warnings\": ["), "{json}");
+    let warnings = json
+        .split("\"warnings\": [")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .unwrap_or("");
+    assert!(
+        warnings.contains("libraryfolders.vdf"),
+        "a broken vdf produced no warning: {json}"
+    );
+}

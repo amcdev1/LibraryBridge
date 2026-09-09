@@ -1011,3 +1011,32 @@ fn an_interrupted_copy_back_is_reported() {
     // And it is still there afterwards.
     assert!(leftover.join("220/partial.dat").is_file());
 }
+
+/// A dry run is read-only in every subcommand, and the same rule about
+/// relative links applies whichever direction the data is moving.
+#[test]
+fn undo_refuses_a_relative_link_that_would_change_meaning() {
+    let fixture = Fixture::new("undolinks");
+    fixture.make_prefix();
+    let id = fixture.library_id();
+    fixture.run_ok(&["fix", &id, "--yes", "--force"]);
+    let target = fs::read_link(fixture.compatdata()).unwrap();
+
+    // Something outside the prefix, reached by a relative link from inside it.
+    fs::write(target.parent().unwrap().join("outside.dat"), b"OUT").unwrap();
+    symlink(
+        "../../../../outside.dat",
+        target.join(format!("{APPID}/pfx/points-outside")),
+    )
+    .unwrap();
+
+    let output = fixture.run(&["undo", &id, "--yes"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("point outside it"), "{stderr}");
+    assert!(stderr.contains("points-outside"), "{stderr}");
+
+    // The repair is untouched and the data is still reachable.
+    assert!(fs::symlink_metadata(fixture.compatdata()).unwrap().file_type().is_symlink());
+    assert_eq!(fs::read(fixture.save_file(&fixture.compatdata())).unwrap(), b"OLD SAVE");
+}

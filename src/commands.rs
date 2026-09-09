@@ -991,7 +991,26 @@ pub fn undo(options: &Options, reference: &str) -> Result<i32, String> {
     // The live data is copied back, never the old backup. Saves made since
     // the repair are the ones that matter.
     let staging = state::new_restore_path(&library.steamapps);
-    let live_bytes = fsops::tree_size(&target)?;
+
+    // The same rule a repair applies, in the other direction. A relative link
+    // pointing out of the prefix means something different once the prefix
+    // moves, whichever way it is moving.
+    let live = fsops::inventory(&target, false)?;
+    let escaping = fsops::escaping_relative_links(&target, &live);
+    if !escaping.is_empty() {
+        let listed: Vec<String> = escaping
+            .iter()
+            .take(10)
+            .map(|(from, to)| format!("  {} -> {}", from.display(), to.display()))
+            .collect();
+        return Err(format!(
+            "this prefix contains relative links that point outside it, and moving the tree \
+             back would change where they lead:\n{}\n\nNothing was changed. The repair is \
+             still in place and your data is still reachable through it.",
+            listed.join("\n")
+        ));
+    }
+    let live_bytes = live.bytes;
 
     println!("Library     {}", library.path.display());
     println!("Current     {}", target.display());

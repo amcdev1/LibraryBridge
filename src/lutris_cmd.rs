@@ -337,6 +337,24 @@ fn plan(options: &Options) -> Result<i32, String> {
         "{{\n  \"schema\": 1,\n  \"created\": {created},\n  \"games\": [\n{}\n  ]\n}}\n",
         rows.join(",\n")
     );
+
+    // A dry run is read-only in every subcommand, and writing the plan file is
+    // still a write.
+    if options.dry_run {
+        println!("Dry run. Would write {} with:", output.display());
+        for candidate in &chosen {
+            println!(
+                "  {} ({} runner, {} confidence)",
+                candidate.name,
+                candidate.runner,
+                candidate.confidence.label()
+            );
+        }
+        println!();
+        println!("Nothing was written.");
+        return Ok(0);
+    }
+
     fs::write(&output, document).map_err(|e| format!("{}: {e}", output.display()))?;
 
     println!("Wrote {} with {} games:", output.display(), chosen.len());

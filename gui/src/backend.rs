@@ -108,7 +108,15 @@ pub fn run(arguments: &[String]) -> Result<String, String> {
     }
 }
 
-pub fn libraries() -> Result<Vec<Library>, String> {
+/// A scan result, warnings included. Dropping them meant a library with
+/// unreadable metadata produced a note on the command line and silence here.
+#[derive(Debug, Clone, Default)]
+pub struct Scan {
+    pub libraries: Vec<Library>,
+    pub warnings: Vec<String>,
+}
+
+pub fn libraries() -> Result<Scan, String> {
     let text_out = run(&["scan".into(), "--json".into()])?;
     let parsed: Value = serde_json::from_str(&text_out).map_err(|e| e.to_string())?;
     let rows = parsed
@@ -116,7 +124,13 @@ pub fn libraries() -> Result<Vec<Library>, String> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    Ok(rows
+    let warnings = parsed
+        .get("warnings")
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default();
+
+    let libraries = rows
         .iter()
         .map(|row| Library {
             id: text(row, "id"),
@@ -141,7 +155,8 @@ pub fn libraries() -> Result<Vec<Library>, String> {
                 })
                 .unwrap_or_default(),
         })
-        .collect())
+        .collect();
+    Ok(Scan { libraries, warnings })
 }
 
 pub fn candidates(roots: &[String], include_known: bool) -> Result<Vec<Candidate>, String> {
@@ -216,7 +231,7 @@ pub fn lutris_status() -> Result<String, String> {
 
 /// Messages from a worker thread back to the window.
 pub enum Update {
-    Libraries(Result<Vec<Library>, String>),
+    Libraries(Result<Scan, String>),
     Candidates(Result<Vec<Candidate>, String>),
     Plan(Result<Plan, String>),
     Storage(Result<Vec<Stored>, String>),

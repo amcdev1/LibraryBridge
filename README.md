@@ -11,7 +11,7 @@ them to Lutris.
 
 **Status: built and tested, never run on Linux, not ready for release.**
 See [the release status](docs/RELEASE-STATUS.md) for what that means. The command line tool,
-the Lutris integration and the desktop window all work and are covered by 97
+the Lutris integration and the desktop window all work and are covered by 100
 tests. Every filesystem-specific claim is unverified, because NTFS behaviour,
 Steam Cloud, the Steam Linux Runtime container and Flatpak sandboxing all need
 a real Linux machine. See [what is not done](#what-it-does-not-do).
@@ -131,7 +131,7 @@ it back. The short version:
 cargo test --workspace
 ```
 
-97 tests. They cover the Valve KeyValues and JSON parsers, SHA-256 against the
+100 tests. They cover the Valve KeyValues and JSON parsers, SHA-256 against the
 published vectors, the copier, the state machine, and the command flows end to
 end against synthetic Steam trees. Two safety properties are tested directly:
 discovered files are never executed, and symlinks are never followed while

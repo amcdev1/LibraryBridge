@@ -17,6 +17,9 @@ use backend::{Candidate, Library, Update};
 use eframe::egui;
 
 const WINDOW: [f32; 2] = [1280.0, 800.0];
+/// How much command output the window keeps. Enough to read what happened,
+/// bounded so a long copy cannot fill memory with progress lines.
+const LOG_LINES: usize = 2000;
 const APP_ICON_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../assets/branding/librarybridge-controller-bridge-top-lb-1024.png"
@@ -136,6 +139,10 @@ struct App {
     /// the tool's terminal output.
     plan: Option<backend::Plan>,
     stored: Vec<backend::Stored>,
+    /// Notes the scan produced, such as metadata it could not read. Shown, not
+    /// swallowed: an empty library list and an unreadable one look identical
+    /// otherwise.
+    warnings: Vec<String>,
 
     sender: Sender<Update>,
     receiver: Receiver<Update>,
@@ -190,6 +197,7 @@ impl App {
             plan_id: None,
             plan: None,
             stored: Vec::new(),
+            warnings: Vec::new(),
             sender,
             receiver,
             icon_texture,
@@ -341,7 +349,10 @@ impl App {
     fn drain(&mut self) {
         while let Ok(update) = self.receiver.try_recv() {
             match update {
-                Update::Libraries(Ok(rows)) => self.libraries = rows,
+                Update::Libraries(Ok(scan)) => {
+                    self.libraries = scan.libraries;
+                    self.warnings = scan.warnings;
+                }
                 Update::Libraries(Err(message)) => self.error = Some(message),
                 Update::Candidates(Ok(rows)) => {
                     self.selected.retain(|id| rows.iter().any(|c| &c.id == id));
@@ -356,7 +367,21 @@ impl App {
                 Update::Plan(Err(_)) => self.plan = None,
                 Update::Storage(Ok(rows)) => self.stored = rows,
                 Update::Storage(Err(message)) => self.error = Some(message),
-                Update::Line(line) => self.log.push(line),
+                Update::Line(line) => {
+                    // Bounded, so a long copy cannot grow this without limit.
+                    // The tail is what matters, so the head is dropped.
+                    self.log.push(line);
+                    if self.log.len() > LOG_LINES {
+                        let excess = self.log.len() - LOG_LINES;
+                        self.log.drain(..excess);
+                        if !self.log.first().map(|l| l.starts_with('[')).unwrap_or(false) {
+                            self.log.insert(
+                                0,
+                                "[earlier output dropped to keep this bounded]".to_string(),
+                            );
+                        }
+                    }
+                }
                 Update::Done(ok) => {
                     self.busy = false;
                     self.finished = Some(ok);
@@ -572,6 +597,20 @@ impl App {
     fn libraries_screen(&mut self, ui: &mut egui::Ui) {
         ui.heading("Steam libraries");
         ui.add_space(10.0);
+
+        if !self.warnings.is_empty() {
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "The scan could not read everything, so this list may be incomplete:",
+                );
+                for warning in &self.warnings {
+                    ui.label(egui::RichText::new(format!("• {warning}")).weak());
+                }
+            });
+            ui.add_space(10.0);
+        }
 
         if self.libraries.is_empty() {
             ui.label("No Steam libraries found yet.");
