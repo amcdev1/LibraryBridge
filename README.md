@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/branding/librarybridge-controller-bridge-top-lb-1024.png" alt="LibraryBridge icon" width="180">
+</p>
+
 # LibraryBridge
 
 Proton stores its Windows compatibility data beside each Steam library. On an
