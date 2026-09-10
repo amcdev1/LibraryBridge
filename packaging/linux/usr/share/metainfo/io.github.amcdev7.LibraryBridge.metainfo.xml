@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.amcdev7.LibraryBridge</id>
+  <name>LibraryBridge</name>
+  <summary>Move Proton data to a Linux filesystem and connect games to Lutris</summary>
+  <description>
+    <p>LibraryBridge keeps Windows game files on their existing drive while putting Proton data on a Linux filesystem, so Steam works from NTFS libraries without a configuration change. It also finds GOG and standalone games and adds them to Lutris.</p>
+  </description>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <launchable type="desktop-id">librarybridge.desktop</launchable>
+  <provides>
+    <binary>librarybridge</binary>
+    <binary>librarybridge-gui</binary>
+  </provides>
+  <url type="homepage">https://github.com/amcdev7/LibraryBridge</url>
+  <categories>
+    <category>Game</category>
+    <category>Utility</category>
+  </categories>
+  <releases>
+    <release version="0.1.0" date="2026-09-10">
+      <description>Initial release.</description>
+    </release>
+  </releases>
+</component>

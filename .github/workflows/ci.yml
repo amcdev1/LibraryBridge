@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --workspace
+
+      - name: Build (debug, all targets)
+        run: cargo build --locked --workspace --all-targets
+
+      - name: Validate desktop entry and metainfo
+        run: |
+          set -euo pipefail
+          if command -v desktop-file-validate >/dev/null 2>&1; then
+            desktop-file-validate packaging/linux/usr/share/applications/librarybridge.desktop
+          fi
+          if command -v appstreamcli >/dev/null 2>&1; then
+            appstreamcli validate packaging/linux/usr/share/metainfo/*.metainfo.xml
+          fi
+        continue-on-error: true

@@ -1,0 +1,68 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+        with:
+          fetch-depth: 0
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7
+        with:
+          cache-on-failure: "true"
+
+      - name: Install appimagetool
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq libfuse2 file
+          curl -L -o /usr/local/bin/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /usr/local/bin/appimagetool
+          /usr/local/bin/appimagetool --version
+        env:
+          # docs.flathub / AppImage CI runs on FUSE-less runners; extract instead of mount.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+
+      - name: Package release assets
+        run: scripts/package-release.sh
+
+      - name: Check release assets
+        run: scripts/check-release.sh --require-appimage
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: dist/*
+
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag \
+            --draft \
+            --title "LibraryBridge $VERSION" \
+            --notes "See README and support matrix. Draft for review; a maintainer must verify the assets on a clean machine and publish the draft."

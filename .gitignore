@@ -26,3 +26,7 @@ Desktop.ini
 
 # Internal planning, release, review, and design material (kept locally)
 /assets/branding/concepts/
+
+# Python bytecode
+__pycache__/
+*.pyc

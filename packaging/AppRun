@@ -1,0 +1,12 @@
+#!/bin/sh
+# AppRun for a LibraryBridge AppImage or extracted AppDir.
+# Resolves the real location of this script so it works whether launched from
+# an FUSE-mounted AppImage (APPDIR set) or extracted to a directory containing
+# spaces, on the PATH, or via a symlink.
+SELF="$0"
+if [ -n "${APPDIR:-}" ]; then
+  HERE="$APPDIR"
+else
+  HERE="$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd -P)"
+fi
+exec "$HERE/usr/bin/librarybridge-gui" "$@"
