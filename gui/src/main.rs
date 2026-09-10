@@ -163,6 +163,37 @@ fn save_data_dir(path: &String) {
     let _ = std::fs::write(&file, format!("{path}\n"));
 }
 
+fn ignored_candidates_path() -> std::path::PathBuf {
+    saved_data_dir_path().with_file_name("ignored-lutris.txt")
+}
+
+fn load_ignored_candidates() -> BTreeSet<String> {
+    std::fs::read_to_string(ignored_candidates_path())
+        .map(|text| {
+            text.lines()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn save_ignored_candidates(ids: &BTreeSet<String>) {
+    let file = ignored_candidates_path();
+    let parent = file.parent().unwrap_or(std::path::Path::new("/"));
+    let _ = std::fs::create_dir_all(parent);
+    let contents = ids.iter().cloned().collect::<Vec<_>>().join("\n");
+    let _ = std::fs::write(
+        file,
+        if contents.is_empty() {
+            contents
+        } else {
+            format!("{contents}\n")
+        },
+    );
+}
+
 fn main() -> eframe::Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let value = |name: &str| -> Option<String> {
@@ -270,6 +301,7 @@ struct App {
     data_dir: String,
     data_dir_input: String,
     selected: BTreeSet<String>,
+    ignored_candidates: BTreeSet<String>,
     edits: HashMap<String, Candidate>,
     expanded: BTreeSet<String>,
 
@@ -365,6 +397,11 @@ impl App {
                 .unwrap_or_default(),
             data_dir_input: String::new(),
             selected: BTreeSet::new(),
+            ignored_candidates: if start.preview {
+                BTreeSet::new()
+            } else {
+                load_ignored_candidates()
+            },
             edits: HashMap::new(),
             expanded: BTreeSet::new(),
             log: Vec::new(),
@@ -809,7 +846,10 @@ impl App {
                 Update::Candidates(Ok(rows)) => {
                     self.scanning = None;
                     self.selected.retain(|id| rows.iter().any(|c| &c.id == id));
-                    self.candidates = rows;
+                    self.candidates = rows
+                        .into_iter()
+                        .filter(|candidate| !self.ignored_candidates.contains(&candidate.id))
+                        .collect();
                 }
                 Update::Candidates(Err(message)) => {
                     self.scanning = None;
@@ -893,6 +933,21 @@ impl App {
             }
         }
         self.edits.get_mut(id).expect("candidate exists")
+    }
+
+    fn hide_candidate(&mut self, id: &str) {
+        self.ignored_candidates.insert(id.to_string());
+        self.selected.remove(id);
+        self.expanded.remove(id);
+        self.edits.remove(id);
+        self.candidates.retain(|candidate| candidate.id != id);
+        save_ignored_candidates(&self.ignored_candidates);
+    }
+
+    fn show_ignored_candidates(&mut self) {
+        self.ignored_candidates.clear();
+        save_ignored_candidates(&self.ignored_candidates);
+        self.refresh_candidates();
     }
 
     fn import_selected(&mut self) {
@@ -1776,6 +1831,31 @@ impl App {
             }
         });
 
+        if !self.ignored_candidates.is_empty() {
+            ui.add_space(10.0);
+            surface_card(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} result(s) hidden from this list",
+                            self.ignored_candidates.len()
+                        ))
+                        .strong(),
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "Hidden results stay hidden when you scan these folders again.",
+                        )
+                        .weak(),
+                    );
+                    if secondary_button_enabled(ui, "Show hidden results", !self.busy).clicked() {
+                        self.show_ignored_candidates();
+                    }
+                });
+            });
+        }
+
         ui.add_space(10.0);
         surface_card(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -2184,6 +2264,20 @@ impl App {
                         let entry = self.edit(id);
                         ui.add(egui::TextEdit::singleline(&mut entry.exe).desired_width(520.0));
                     });
+                }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("List visibility").strong());
+                ui.label(
+                    egui::RichText::new(
+                        "Hide this result if it is a launcher, helper, or another folder you do not want to import. This only changes this list. It does not remove files or change Lutris.",
+                    )
+                    .weak(),
+                );
+                if secondary_button_enabled(ui, "Hide from list", !self.busy).clicked() {
+                    self.hide_candidate(id);
                 }
             }
         });

@@ -1,5 +1,26 @@
 /target
 
+# Local release and coverage output
+/dist/
+/build/
+/out/
+/coverage/
+*.log
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Editor and operating-system metadata
+.idea/
+*.swp
+*.swo
+*~
+Thumbs.db
+Desktop.ini
+._*
+
 # macOS directory metadata, not project content
 .DS_Store
 
