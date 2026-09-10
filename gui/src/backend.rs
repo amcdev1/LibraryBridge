@@ -220,6 +220,9 @@ pub fn lutris_status(data_dir: &str) -> Result<String, String> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Phase {
     Preparing,
+    LutrisPreparing,
+    OpeningLutris,
+    AddingGames { done: u64, total: u64 },
     Copying { total_bytes: u64 },
     Progress { files: u64, bytes: u64 },
     Verifying,
@@ -233,13 +236,22 @@ impl Phase {
     pub fn can_stop(&self) -> bool {
         matches!(
             self,
-            Phase::Preparing | Phase::Copying { .. } | Phase::Progress { .. } | Phase::Verifying
+            Phase::Preparing
+                | Phase::LutrisPreparing
+                | Phase::OpeningLutris
+                | Phase::AddingGames { .. }
+                | Phase::Copying { .. }
+                | Phase::Progress { .. }
+                | Phase::Verifying
         )
     }
 
     pub fn label(&self) -> &'static str {
         match self {
             Phase::Preparing => "Checking the drive",
+            Phase::LutrisPreparing => "Preparing Lutris import",
+            Phase::OpeningLutris => "Opening Lutris",
+            Phase::AddingGames { .. } => "Adding games to Lutris",
             Phase::Copying { .. } | Phase::Progress { .. } => "Copying",
             Phase::Verifying => "Checking every file",
             Phase::Committing => "Switching over",
@@ -256,6 +268,12 @@ fn parse_event(line: &str) -> Option<Phase> {
     let count = |key: &str| value.get(key).and_then(Value::as_u64).unwrap_or(0);
     Some(match value.get("event")?.as_str()? {
         "preparing" => Phase::Preparing,
+        "lutris_preparing" => Phase::LutrisPreparing,
+        "lutris_opening" => Phase::OpeningLutris,
+        "lutris_adding" => Phase::AddingGames {
+            done: count("done"),
+            total: count("total"),
+        },
         "copying" => Phase::Copying { total_bytes: count("total_bytes") },
         "progress" => Phase::Progress { files: count("files"), bytes: count("bytes") },
         "verifying" => Phase::Verifying,

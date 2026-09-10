@@ -1005,6 +1005,7 @@ impl App {
             vec![
                 "lutris".into(),
                 "import".into(),
+                "--json".into(),
                 "--plan".into(),
                 path.to_string_lossy().to_string(),
             ],
@@ -2535,21 +2536,41 @@ impl App {
                 None => {
                     let phase = self.phase.clone();
                     ui.label(if is_lutris {
-                        "Preparing Lutris import"
+                        match &phase {
+                            Some(backend::Phase::LutrisPreparing) | None => {
+                                "Preparing Lutris import"
+                            }
+                            Some(backend::Phase::OpeningLutris) => "Opening Lutris",
+                            Some(backend::Phase::AddingGames { .. }) => "Adding games to Lutris",
+                            _ => "Preparing Lutris import",
+                        }
                     } else {
                         match &phase {
                             Some(phase) => phase.label(),
                             None => "Starting",
                         }
                     });
-                    if let Some(backend::Phase::Progress { files, bytes }) = &phase {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{files} files, {}",
-                                backend::human_bytes(*bytes)
-                            ))
-                            .weak(),
-                        );
+                    match &phase {
+                        Some(backend::Phase::AddingGames { done, total }) => {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Game {} of {}",
+                                    done.saturating_add(1),
+                                    total
+                                ))
+                                .weak(),
+                            );
+                        }
+                        Some(backend::Phase::Progress { files, bytes }) => {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{files} files, {}",
+                                    backend::human_bytes(*bytes)
+                                ))
+                                .weak(),
+                            );
+                        }
+                        _ => {}
                     }
                     ui.add_space(6.0);
 
@@ -2994,10 +3015,19 @@ fn operation_stepper(
     let current = if finished == Some(true) {
         labels.len() - 1
     } else if is_lutris {
-        0
+        match phase {
+            Some(backend::Phase::OpeningLutris) => 1,
+            Some(backend::Phase::AddingGames { .. }) => 2,
+            _ => 0,
+        }
     } else {
         match phase {
             Some(backend::Phase::Preparing) => 0,
+            Some(
+                backend::Phase::LutrisPreparing
+                | backend::Phase::OpeningLutris
+                | backend::Phase::AddingGames { .. },
+            ) => 0,
             Some(backend::Phase::Copying { .. } | backend::Phase::Progress { .. }) => 1,
             Some(backend::Phase::Verifying) => 2,
             Some(backend::Phase::Committing) => 3,

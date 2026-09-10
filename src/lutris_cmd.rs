@@ -226,6 +226,20 @@ fn emit_scan(options: &Options, event: &str, fields: &[(&str, String)]) {
     println!("{line}");
 }
 
+/// Emit a machine-readable import phase while keeping the normal human log
+/// on stdout for callers that want to show both.
+fn emit(options: &Options, event: &str, fields: &[(&str, String)]) {
+    if !options.json {
+        return;
+    }
+    let mut line = format!("{{\"event\": {}", json_string(event));
+    for (key, value) in fields {
+        line.push_str(&format!(", {}: {value}", json_string(key)));
+    }
+    line.push('}');
+    println!("{line}");
+}
+
 fn scan_json(candidates: &[&Candidate]) -> String {
     let mut out = String::from("{\n  \"schema\": 1,\n  \"candidates\": [\n");
     let rows: Vec<String> = candidates
@@ -474,6 +488,8 @@ fn import(options: &Options) -> Result<i32, String> {
         return Ok(0);
     }
 
+    emit(options, "lutris_preparing", &[]);
+
     let definitions_dir = state_dir().join("definitions");
     fs::create_dir_all(&definitions_dir)
         .map_err(|e| format!("{}: {e}", definitions_dir.display()))?;
@@ -486,6 +502,8 @@ fn import(options: &Options) -> Result<i32, String> {
 
     let mut imported = 0;
     let mut skipped = 0;
+    let total = games.len() as u64;
+    let mut processed = 0_u64;
     for game in games {
         let name = game.string("name").unwrap_or_else(|| "unnamed".into());
         let runner = game.string("runner").unwrap_or_else(|| "wine".into());
@@ -514,7 +532,30 @@ fn import(options: &Options) -> Result<i32, String> {
             .map_err(|e| format!("{}: {e}", yaml_path.display()))?;
 
         println!("  {name}");
+        let already_running = processed == 0 && lutris::is_running(&installation);
+        if already_running {
+            emit(
+                options,
+                "lutris_adding",
+                &[("done", processed.to_string()), ("total", total.to_string())],
+            );
+        } else if processed == 0 {
+            emit(options, "lutris_opening", &[]);
+        } else {
+            emit(
+                options,
+                "lutris_adding",
+                &[("done", processed.to_string()), ("total", total.to_string())],
+            );
+        }
         let exit = lutris::install(&installation, &yaml_path);
+        if !already_running {
+            emit(
+                options,
+                "lutris_adding",
+                &[("done", processed.to_string()), ("total", total.to_string())],
+            );
+        }
         match exit {
             Ok(code) if code != 0 => {
                 println!(
@@ -527,6 +568,7 @@ fn import(options: &Options) -> Result<i32, String> {
             Err(message) => {
                 println!("    could not run Lutris: {message}");
                 skipped += 1;
+                processed += 1;
                 continue;
             }
         }
@@ -589,6 +631,7 @@ fn import(options: &Options) -> Result<i32, String> {
                 }
             }
         }
+        processed += 1;
     }
 
     println!();

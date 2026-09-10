@@ -97,6 +97,53 @@ fn on_path(program: &str) -> bool {
     })
 }
 
+fn command_line_is_lutris(command_line: &str) -> bool {
+    let command_line = command_line.to_ascii_lowercase();
+    command_line.split_whitespace().any(|part| {
+        part == "lutris"
+            || part.ends_with("/lutris")
+            || part == "net.lutris.lutris"
+            || part.ends_with("/net.lutris.lutris")
+    })
+}
+
+/// Whether a Lutris process is already running.
+///
+/// The import command still sends Lutris an install request either way, but
+/// knowing this lets the window skip the opening step when Lutris is already
+/// available. On Linux `/proc` gives us the real command lines; `ps` keeps the
+/// check useful on development hosts without `/proc`.
+pub fn is_running(_installation: &Installation) -> bool {
+    if Path::new("/proc").is_dir() {
+        let Ok(entries) = fs::read_dir("/proc") else {
+            return false;
+        };
+        return entries.flatten().any(|entry| {
+            let command = entry.path().join("cmdline");
+            let command_line = fs::read(command).unwrap_or_default();
+            let command_line = String::from_utf8_lossy(&command_line).replace('\0', " ");
+            if command_line_is_lutris(&command_line) {
+                return true;
+            }
+            fs::read_to_string(entry.path().join("comm"))
+                .map(|name| command_line_is_lutris(name.trim()))
+                .unwrap_or(false)
+        });
+    }
+
+    Command::new("ps")
+        .args(["-A", "-o", "args="])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(command_line_is_lutris)
+        })
+        .unwrap_or(false)
+}
+
 /// Every Lutris installation we can see. Both packagings can be present.
 pub fn find_installations() -> Vec<Installation> {
     let mut found = Vec::new();
