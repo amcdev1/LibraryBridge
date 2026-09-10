@@ -107,6 +107,21 @@ fn command_line_is_lutris(command_line: &str) -> bool {
     })
 }
 
+/// Whether a command line belongs to LibraryBridge itself rather than to
+/// Lutris. Its own processes run as `librarybridge lutris import` and
+/// `librarybridge lutris scan`, and the `lutris` there is an argument, not the
+/// application the running check is looking for. Without this filter every
+/// import would see its own `lutris` argument, conclude Lutris was already
+/// open, and never show the opening step.
+fn command_line_is_self(command_line: &str) -> bool {
+    let command_line = command_line.to_ascii_lowercase();
+    command_line
+        .split_whitespace()
+        .next()
+        .map(|first| first == "librarybridge" || first.ends_with("/librarybridge"))
+        .unwrap_or(false)
+}
+
 /// Whether a Lutris process is already running.
 ///
 /// The import command still sends Lutris an install request either way, but
@@ -115,13 +130,24 @@ fn command_line_is_lutris(command_line: &str) -> bool {
 /// check useful on development hosts without `/proc`.
 pub fn is_running(_installation: &Installation) -> bool {
     if Path::new("/proc").is_dir() {
+        // The caller is itself `librarybridge lutris import`, so its own
+        // command line already matches `lutris` and must not count.
+        let own_pid = std::process::id().to_string();
         let Ok(entries) = fs::read_dir("/proc") else {
             return false;
         };
         return entries.flatten().any(|entry| {
+            if entry.file_name().to_string_lossy() == own_pid {
+                return false;
+            }
             let command = entry.path().join("cmdline");
             let command_line = fs::read(command).unwrap_or_default();
             let command_line = String::from_utf8_lossy(&command_line).replace('\0', " ");
+            // A background `librarybridge lutris scan` also looks like this,
+            // and it is not the Lutris application either.
+            if command_line_is_self(&command_line) {
+                return false;
+            }
             if command_line_is_lutris(&command_line) {
                 return true;
             }
@@ -139,7 +165,10 @@ pub fn is_running(_installation: &Installation) -> bool {
         .map(|output| {
             String::from_utf8_lossy(&output.stdout)
                 .lines()
-                .any(command_line_is_lutris)
+                .any(|line| {
+                    let line = line.trim();
+                    !command_line_is_self(line) && command_line_is_lutris(line)
+                })
         })
         .unwrap_or(false)
 }
@@ -441,6 +470,23 @@ mod tests {
         assert_eq!(strip_trailing_id("half-life-2-1699999999"), "half-life-2");
         assert_eq!(strip_trailing_id("portal"), "portal");
         assert_eq!(strip_trailing_id("game-2"), "game");
+    }
+
+    /// The running check must not mistake `librarybridge lutris import` (or a
+    /// background `lutris scan`) for the Lutris application itself.
+    #[test]
+    fn our_own_lutris_arguments_are_never_a_running_lutris() {
+        assert!(command_line_is_lutris("/usr/bin/lutris"));
+        assert!(command_line_is_lutris("python3 /usr/bin/lutris"));
+        assert!(command_line_is_lutris("flatpak run net.lutris.Lutris"));
+        assert!(!command_line_is_lutris("librarybridge lutris import --plan /tmp/plan.json"));
+        assert!(!command_line_is_lutris("librarybridge lutris scan --root /games"));
+        assert!(!command_line_is_lutris("librarybridge fix steam-main"));
+
+        assert!(command_line_is_self("librarybridge lutris import --plan /tmp/plan.json"));
+        assert!(command_line_is_self("/opt/librarybridge/bin/librarybridge lutris scan --root /games"));
+        assert!(!command_line_is_self("/usr/bin/lutris"));
+        assert!(!command_line_is_self("flatpak run net.lutris.Lutris"));
     }
 
     #[test]
