@@ -72,10 +72,6 @@ NOTES
     Nothing is ever deleted. `fix` renames your original compatdata to
     compatdata.backup beside itself and leaves it there.
     Close Steam before repairing.
-
-    To install the desktop entry and icon for the window (needed for the
-    taskbar/app-menu icon on Wayland), run:
-        packaging/install-desktop.sh
 ";
 
 fn main() -> ExitCode {
