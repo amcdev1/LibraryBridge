@@ -1272,10 +1272,10 @@ fn backup_delete_removes_the_original_after_confirmation() {
     assert!(!backup.is_dir(), "backup is still there after delete");
 }
 
-/// If the moved copy has diverged from the original since the repair, the
-/// backup holds data the live copy no longer has. It stays.
+/// If the moved copy no longer carries something the original holds, the
+/// original still has the only copy of that data. It stays.
 #[test]
-fn backup_delete_refuses_when_the_moved_copy_differs() {
+fn backup_delete_refuses_when_the_moved_copy_is_missing_data() {
     let fixture = Fixture::new("backup-delete-diverge");
     fixture.make_prefix();
     let id = fixture.library_id();
@@ -1285,21 +1285,51 @@ fn backup_delete_refuses_when_the_moved_copy_differs() {
     fixture.run_ok(&["evidence", &id, "--record", "launch=yes"]);
     fixture.run_ok(&["evidence", &id, "--record", "save=yes"]);
 
-    // A save written only into the live copy after the repair.
-    let target = fs::read_link(fixture.compatdata()).unwrap();
-    fs::write(
-        target.join(format!("{APPID}/pfx/drive_c/post-repair.dat")),
-        b"NEW SAVE",
-    )
-    .unwrap();
+    // A file the original still holds is gone from the live copy. The copy no
+    // longer carries what the original has, so the original must stay.
+    let live = fs::read_link(fixture.compatdata()).unwrap();
+    fs::remove_file(fixture.save_file(&live)).unwrap();
 
     let backup = fixture.backup_dir();
     let output = fixture.run(&["backup", &id, "--yes"]);
     assert!(
         !output.status.success(),
-        "delete with divergent live copy must fail: {output:?}"
+        "delete with data missing from the live copy must fail: {output:?}"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("does not match"), "{stderr}");
+    assert!(stderr.contains("not fully carried by"), "{stderr}");
     assert!(backup.is_dir(), "divergent backup was deleted");
+}
+
+/// Playing a game writes into the moved copy — new saves, updated registries,
+/// patched files. That is the normal prerequisite for recording evidence, so
+/// it must not block the deletion: a copy that is newer than the original has
+/// outlived the original's purpose.
+#[test]
+fn backup_delete_after_newer_writes() {
+    let fixture = Fixture::new("backup-delete-newer");
+    fixture.make_prefix();
+    let id = fixture.library_id();
+    if !fixture.try_fix(&id) {
+        return;
+    }
+    fixture.run_ok(&["evidence", &id, "--record", "launch=yes"]);
+    fixture.run_ok(&["evidence", &id, "--record", "save=yes"]);
+
+    let live = fs::read_link(fixture.compatdata()).unwrap();
+    // A brand new save, only in the moved copy.
+    fs::write(live.join(format!("{APPID}/pfx/drive_c/post-repair.dat")), b"NEW SAVE")
+        .unwrap();
+    // An existing file rewritten in place, as a game update would.
+    fs::write(live.join(format!("{APPID}/pfx/system.reg")), b"WINE REGISTRY\nEXTRA\n")
+        .unwrap();
+
+    let backup = fixture.backup_dir();
+    let text = fixture.run_ok(&["backup", &id, "--dry-run"]);
+    assert!(text.contains("Would delete"), "{text}");
+    assert!(backup.is_dir(), "dry run deleted the backup");
+
+    let text = fixture.run_ok(&["backup", &id, "--yes"]);
+    assert!(text.contains("Deleted"), "{text}");
+    assert!(!backup.is_dir(), "backup is still there after delete");
 }

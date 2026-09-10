@@ -524,6 +524,86 @@ fn compare_link_groups(expected: &Manifest, actual: &Manifest) -> Vec<String> {
     )]
 }
 
+/// Whether the copy still carries everything the original holds.
+///
+/// The opposite direction from `verify_against`: extra entries in the copy
+/// and files whose contents differ are allowed here, because the thing being
+/// decided is whether the original has become disposable, not whether the
+/// copy is byte-identical. A game that has run since the repair writes into
+/// the moved copy, so the copy is expected to be *newer* than the original in
+/// places. It is refused only when the original still holds something the
+/// copy does not:
+///
+///   - an entry the original has and the copy lacks, or
+///   - a file that is older in the copy than the original's version of it.
+///
+/// A symlink whose text changed counts as "the copy no longer carries the
+/// original's entry", which is the same refusal. Directories only have to
+/// exist on both sides.
+pub fn carried_by(original: &Manifest, copy: &Manifest) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut copy_by_path: std::collections::HashMap<&Path, &Entry> =
+        std::collections::HashMap::new();
+    for entry in &copy.entries {
+        copy_by_path.insert(entry.rel.as_path(), entry);
+    }
+
+    for want in &original.entries {
+        let rel = want.rel.as_path();
+        let Some(got) = copy_by_path.get(rel) else {
+            problems.push(format!(
+                "missing from the moved copy: {}",
+                want.rel.display()
+            ));
+            continue;
+        };
+        match (&want.kind, &got.kind) {
+            (Kind::Dir, Kind::Dir) => {}
+            (Kind::File { .. }, Kind::File { .. }) => {
+                // A file's own age says which copy of it is newer. Equal
+                // means it was not touched since the repair.
+                let stamp = |t: SystemTime| -> Option<(u64, u32)> {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| (d.as_secs(), d.subsec_nanos()))
+                        .ok()
+                };
+                if let (Some(want_time), Some(got_time)) = (want.mtime, got.mtime) {
+                    if let (Some((ws, wn)), Some((gs, gn))) = (stamp(want_time), stamp(got_time)) {
+                        if gs < ws || (gs == ws && gn < wn) {
+                            problems.push(format!(
+                                "{} is older in the moved copy than in the original",
+                                want.rel.display()
+                            ));
+                        }
+                    }
+                }
+            }
+            (
+                Kind::Symlink {
+                    target: want_target,
+                },
+                Kind::Symlink { target: got_target },
+            ) => {
+                if want_target != got_target {
+                    problems.push(format!(
+                        "{}: the link points at {} in the original and {} in the moved copy",
+                        want.rel.display(),
+                        want_target.display(),
+                        got_target.display()
+                    ));
+                }
+            }
+            (want_kind, got_kind) => problems.push(format!(
+                "{}: {} in the original, {} in the moved copy",
+                want.rel.display(),
+                want_kind.label(),
+                got_kind.label()
+            )),
+        }
+    }
+    problems
+}
+
 /// Detect a source that changed while it was being copied. Compares shape,
 /// sizes, link text and modification times, without rereading file contents.
 pub fn changed_since(before: &Manifest, after: &Manifest) -> Vec<String> {

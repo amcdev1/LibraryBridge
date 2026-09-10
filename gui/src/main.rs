@@ -118,6 +118,9 @@ enum Screen {
 enum Action {
     Fix,
     Undo,
+    /// Delete the original that a repair kept beside the library, after
+    /// evidence that the moved copy works. The only deletion the tool makes.
+    Backup,
 }
 
 impl Action {
@@ -125,6 +128,7 @@ impl Action {
         match self {
             Action::Fix => "fix",
             Action::Undo => "undo",
+            Action::Backup => "backup",
         }
     }
 }
@@ -718,7 +722,9 @@ impl eframe::App for App {
                 ui.add_space(4.0);
             }
             match self.screen.clone() {
-                Screen::Home => self.home(ui),
+                Screen::Home => {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.home(ui));
+                }
                 Screen::Libraries => self.libraries_screen(ui),
                 Screen::Review { id, action, title } => {
                     self.review_screen(ui, &id, action, &title)
@@ -1112,6 +1118,17 @@ impl App {
                                         format!("Move {} back", library.name),
                                     );
                                 }
+                                if !library.backups.is_empty() && ui
+                                    .add_enabled(enabled, egui::Button::new("Review delete original"))
+                                    .clicked()
+                                {
+                                    self.back_to = Screen::Libraries;
+                                    self.review(
+                                        &library.id,
+                                        Action::Backup,
+                                        format!("Delete the original for {}", library.name),
+                                    );
+                                }
                             }
                             _ => {}
                         }
@@ -1151,10 +1168,12 @@ impl App {
         ui.add_space(6.0);
         // Do not promise a plan above an error message.
         ui.label(match (self.review_ok, action) {
-            (Some(false), _) => "This library cannot be repaired as things stand. Nothing has \
-                                 been changed.",
+            (Some(false), _) => "The tool refuses this as things stand. Nothing has been \
+                                 changed.",
             (_, Action::Fix) => "This is exactly what will happen. Nothing has changed yet.",
             (_, Action::Undo) => "This copies the current data back to the game drive first.",
+            (_, Action::Backup) => "This deletes the original from the game drive to reclaim \
+                                    its space.",
         });
         ui.add_space(10.0);
 
@@ -1240,12 +1259,25 @@ impl App {
             );
             ui.add_space(8.0);
         }
+        if action == Action::Backup {
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "This cannot be undone. The original is the only way back if the \
+                     moved copy ever fails, and after this deletion `undo` has nothing \
+                     to copy back.",
+                );
+            });
+            ui.add_space(8.0);
+        }
 
         ui.horizontal(|ui| {
             let ready = !self.busy && self.review_ok == Some(true);
             let label = match action {
                 Action::Fix => "Repair now",
                 Action::Undo => "Move it back",
+                Action::Backup => "Delete original",
             };
             if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
                 let mut arguments = vec![
@@ -1265,12 +1297,11 @@ impl App {
                         arguments.push(plan.clone());
                     }
                 }
-                self.back_to = Screen::Libraries;
                 self.subject = Some(id.to_string());
                 self.run(arguments, title.to_string());
             }
             if ui.add_enabled(ready, egui::Button::new("Cancel")).clicked() {
-                self.screen = Screen::Libraries;
+                self.screen = self.back_to.clone();
             }
         });
     }
@@ -1760,8 +1791,9 @@ impl App {
         ui.heading("Storage and backups");
         ui.add_space(6.0);
         ui.label(
-            "Originals are kept on purpose. Nothing here is deleted by LibraryBridge, and \
-             nothing here needs deleting for the repair to work.",
+            "Originals are kept on purpose, and a repair never deletes them. Once a game has \
+             launched and loaded a save from the moved copy, you can delete an original here to \
+             reclaim its space — or move the data back the other way.",
         );
         ui.add_space(10.0);
 
@@ -1821,6 +1853,41 @@ impl App {
                             .weak(),
                         );
                     }
+
+                    // The two ways out of this state, both through the tool's
+                    // own dry run so nothing is acted on unseen. Restore needs
+                    // the moved copy (undo copies it back); deleting the
+                    // original needs a backup to exist.
+                    let can_restore = row.live.is_some();
+                    let can_delete = !row.backups.is_empty();
+                    if can_restore || can_delete {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            let enabled = !self.busy;
+                            if can_restore && ui
+                                .add_enabled(enabled, egui::Button::new("Review restore"))
+                                .clicked()
+                            {
+                                self.back_to = Screen::Storage;
+                                self.review(
+                                    &row.id,
+                                    Action::Undo,
+                                    format!("Move {} back", row.name),
+                                );
+                            }
+                            if can_delete && ui
+                                .add_enabled(enabled, egui::Button::new("Review delete original"))
+                                .clicked()
+                            {
+                                self.back_to = Screen::Storage;
+                                self.review(
+                                    &row.id,
+                                    Action::Backup,
+                                    format!("Delete the original for {}", row.name),
+                                );
+                            }
+                        });
+                    }
                 });
                 ui.add_space(8.0);
             }
@@ -1855,8 +1922,8 @@ impl App {
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new(
-                "Delete an original yourself once a game has launched and loaded a save from \
-                 the copy in use.",
+                "Deleting an original is the one deletion this tool makes, it needs recorded \
+                 evidence that a game works, and it cannot be undone afterwards.",
             )
             .weak(),
         );
@@ -2077,6 +2144,17 @@ impl App {
 
         ui.add_space(12.0);
         if self.finished.is_some() && ui.button("Done").clicked() {
+            // Return where the action started. A repair or delete launched
+            // from the storage page goes back there, and that page's numbers
+            // must be re-measured or they will describe a world that changed.
+            if matches!(self.back_to, Screen::Storage) {
+                self.busy = true;
+                let data_dir = self.data_dir.clone();
+                backend::spawn(self.sender.clone(), move |tx| {
+                    let _ = tx.send(Update::Storage(backend::storage(&data_dir)));
+                    let _ = tx.send(Update::Done(true));
+                });
+            }
             self.screen = self.back_to.clone();
             // No candidates re-scan here: an import already refreshed the list
             // when it finished (Done -> just_imported -> refresh_candidates),

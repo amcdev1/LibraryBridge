@@ -1224,16 +1224,19 @@ fn link_and_check(target: &Path, link_path: &Path) -> Result<(), String> {
 ///  1. the library must be genuinely repaired (a live symlink to a target we
 ///     own),
 ///  2. a person must have recorded that a game launched and loaded a save,
-///  3. the moved copy must still match the original it will leave behind.
+///  3. the moved copy must still carry the original it will leave behind.
 ///
-/// The last check is what makes the deletion more than a guess. It re-reads
-/// the current copy and the backup and refuses on the first difference, so a
-/// game that has written new data since the repair (or a repair that silently
-/// lost something) prevents the delete rather than losing the only copy.
+/// The last check is what makes the deletion more than a guess, and it is
+/// deliberately one-way. Playing the game is the *prerequisite* for step 2,
+/// and playing writes new files into the moved copy, so the copy is allowed —
+/// expected — to be newer than the original. The deletion is refused only the
+/// other way round: if the copy is missing an entry the original still holds,
+/// or holds an older version of one, then the original still carries data the
+/// copy does not, and deleting it would lose the only copy.
 ///
 /// Nothing inside the moved copy is ever touched, and the deletion is as
-/// durable as everything else: the backup is removed only after the copy has
-/// been shown to be identical.
+/// durable as everything else: the original is removed only after the copy
+/// has been shown to carry all of it.
 pub fn backup(options: &Options, reference: &str) -> Result<i32, String> {
     let (libraries, _) = steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
     let library = steam::resolve(&libraries, reference)?;
@@ -1286,25 +1289,38 @@ pub fn backup(options: &Options, reference: &str) -> Result<i32, String> {
     let backup = report.backups.first().unwrap();
     let backup_bytes = fsops::tree_size(backup).unwrap_or(0);
 
-    // Re-verify before touching anything: the moved copy is not the same tree
-    // it was at repair time. If a game has added data since, the copy is
-    // newer than the backup and the backup's only purpose is already over.
-    // If it differs the other way, something is wrong and the backup stays.
-    let mut equal = false;
+    // Re-check before touching anything, because the moved copy is not the
+    // tree it was at repair time — the evidence gate above amounts to "play
+    // the game", and playing writes new files into the copy. Newer is fine.
+    // Only the other direction is a reason to keep the original: an entry
+    // the original holds that the copy is missing, or a file that is older
+    // in the copy than the original's version of it.
+    let mut ready = backup_bytes > 0;
+    let mut why = "the original is empty".to_string();
     if report.backups.len() == 1 {
-        equal = same_data(backup, &target)?;
+        let backup_manifest = fsops::inventory(backup, false)?;
+        let copy_manifest = fsops::inventory(&target, false)?;
+        let carried = fsops::carried_by(&backup_manifest, &copy_manifest);
+        ready = carried.is_empty();
+        if !carried.is_empty() {
+            why = carried.join("; ");
+        }
+    } else {
+        why = format!(
+            "{} originals were found, so none can be tied to the moved copy",
+            report.backups.len()
+        );
     }
-    let ready = equal && backup_bytes > 0;
 
     if options.dry_run {
         // The dry run says exactly what is true, including when the deletion
         // would be refused, so the user can see the gate before anything runs.
         if !ready {
             return Err(format!(
-                "the moved copy {} does not match the original at {}. This would NOT be \
-                 deleted. Keep the backup.",
-                target.display(),
-                backup.display()
+                "the original at {} is not fully carried by the moved copy at {}: {why}. \
+                 This would NOT be deleted. Keep the backup.",
+                backup.display(),
+                target.display()
             ));
         }
         println!("Library     {}", library.path.display());
@@ -1316,8 +1332,8 @@ pub fn backup(options: &Options, reference: &str) -> Result<i32, String> {
         );
         println!("Copy        {}", target.display());
         println!(
-            "Would delete the original above. The moved copy is identical and has been \
-             verified."
+            "Would delete the original above. Every file it holds is present in the moved \
+             copy, at least as new."
         );
         println!("Dry run. Nothing was deleted.");
         return Ok(0);
@@ -1325,10 +1341,10 @@ pub fn backup(options: &Options, reference: &str) -> Result<i32, String> {
 
     if !ready {
         return Err(format!(
-            "the moved copy {} does not match the original at {}. The original is kept, nothing \
-             was deleted.",
-            target.display(),
-            backup.display()
+            "the original at {} is not fully carried by the moved copy at {}: {why}. The \
+             original is kept, nothing was deleted.",
+            backup.display(),
+            target.display()
         ));
     }
 
