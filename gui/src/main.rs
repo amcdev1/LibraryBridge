@@ -2055,6 +2055,24 @@ impl App {
                     .weak(),
                 );
             });
+            // A warning read off the game folder is easy to miss between the
+            // checkboxes and the button. Repeat it where the user commits.
+            let warned = self
+                .selected
+                .iter()
+                .filter_map(|id| self.candidate(id).cloned())
+                .filter(|c| !c.launch_warnings.is_empty() || !c.filesystem_warning.is_empty())
+                .count();
+            if warned > 0 {
+                ui.add_space(6.0);
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!(
+                        "{warned} selected game(s) have warnings that appear when they first \
+                         launch. Open each game's Details before adding."
+                    ),
+                );
+            }
         });
     }
 
@@ -2147,6 +2165,13 @@ impl App {
                     ui.label(egui::RichText::new("\u{2715}").color(ui.visuals().warn_fg_color));
                 }
                 ui.label(egui::RichText::new(&candidate.name).size(16.0).strong());
+                if !candidate.launch_warnings.is_empty() {
+                    let mark = ui.colored_label(ui.visuals().warn_fg_color, "⚠ warnings");
+                    mark.on_hover_text(
+                        "This game is likely to fail when it first launches. \
+                         Open Details below before adding it.",
+                    );
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .small_button(if open { "Hide" } else { "Details" })
