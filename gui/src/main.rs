@@ -25,12 +25,43 @@ const APP_ICON_BYTES: &[u8] = include_bytes!(concat!(
     "/../assets/branding/librarybridge-controller-bridge-top-lb-1024.png"
 ));
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ThemeChoice {
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeChoice {
+    fn label(self) -> &'static str {
+        match self {
+            ThemeChoice::System => "System",
+            ThemeChoice::Light => "Light",
+            ThemeChoice::Dark => "Dark",
+        }
+    }
+}
+
 /// The small set of visual decisions shared by every screen. Keeping these
 /// here makes the first polish pass coherent, while leaving the screen
 /// layouts free to evolve in later passes.
-fn configure_style(ctx: &egui::Context) {
+fn configure_style(ctx: &egui::Context, theme: ThemeChoice, system_dark: bool) {
+    ctx.set_theme(match theme {
+        ThemeChoice::System => egui::ThemePreference::System,
+        ThemeChoice::Light => egui::ThemePreference::Light,
+        ThemeChoice::Dark => egui::ThemePreference::Dark,
+    });
     let mut style = (*ctx.style()).clone();
-    let dark = style.visuals.dark_mode;
+    let dark = match theme {
+        ThemeChoice::System => system_dark,
+        ThemeChoice::Light => false,
+        ThemeChoice::Dark => true,
+    };
+    style.visuals = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
 
     let (
         panel,
@@ -79,6 +110,7 @@ fn configure_style(ctx: &egui::Context) {
     style.spacing.item_spacing = egui::vec2(10.0, 8.0);
     style.spacing.window_margin = egui::Margin::same(16.0);
 
+    style.visuals.dark_mode = dark;
     style.visuals.panel_fill = panel;
     style.visuals.window_fill = surface;
     style.visuals.window_stroke = egui::Stroke::new(1.0, border);
@@ -144,6 +176,20 @@ fn centered_content<R>(
     .inner
 }
 
+fn help_section(ui: &mut egui::Ui, heading: &str, cards: &[(&str, &str)]) {
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(heading).size(18.0).strong());
+    ui.add_space(6.0);
+    for (title, body) in cards {
+        surface_card(ui, |ui| {
+            ui.label(egui::RichText::new(*title).size(16.0).strong());
+            ui.add_space(4.0);
+            ui.label(*body);
+        });
+        ui.add_space(10.0);
+    }
+}
+
 /// Where the window remembers a `--data-dir` choice between sessions. It lives
 /// in the default data home, not in the data directory itself, so the setting
 /// survives the location it names being on an unmounted drive.
@@ -161,6 +207,33 @@ fn save_data_dir(path: &String) {
     let parent = file.parent().unwrap_or(std::path::Path::new("/"));
     let _ = std::fs::create_dir_all(parent);
     let _ = std::fs::write(&file, format!("{path}\n"));
+}
+
+fn saved_theme_path() -> std::path::PathBuf {
+    saved_data_dir_path().with_file_name("theme.txt")
+}
+
+fn load_theme_choice() -> ThemeChoice {
+    match std::fs::read_to_string(saved_theme_path())
+        .map(|text| text.trim().to_string())
+        .as_deref()
+    {
+        Ok("light") => ThemeChoice::Light,
+        Ok("dark") => ThemeChoice::Dark,
+        _ => ThemeChoice::System,
+    }
+}
+
+fn save_theme_choice(theme: ThemeChoice) {
+    let file = saved_theme_path();
+    let parent = file.parent().unwrap_or(std::path::Path::new("/"));
+    let _ = std::fs::create_dir_all(parent);
+    let value = match theme {
+        ThemeChoice::System => "system",
+        ThemeChoice::Light => "light",
+        ThemeChoice::Dark => "dark",
+    };
+    let _ = std::fs::write(file, format!("{value}\n"));
 }
 
 fn ignored_candidates_path() -> std::path::PathBuf {
@@ -261,6 +334,7 @@ enum Screen {
     },
     Games,
     Storage,
+    Settings,
     Help,
     Running {
         title: String,
@@ -289,6 +363,8 @@ impl Action {
 struct App {
     screen: Screen,
     back_to: Screen,
+    theme: ThemeChoice,
+    system_dark: bool,
 
     libraries: Vec<Library>,
     candidates: Vec<Candidate>,
@@ -362,8 +438,10 @@ struct App {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, start: Start) -> App {
         // Respect whatever scale and light/dark preference the desktop asks
-        // for rather than imposing a fixed factor or theme.
-        configure_style(&cc.egui_ctx);
+        // for unless the user has chosen a manual theme.
+        let system_dark = cc.egui_ctx.style().visuals.dark_mode;
+        let theme = load_theme_choice();
+        configure_style(&cc.egui_ctx, theme, system_dark);
         let decoded_icon = image::load_from_memory(APP_ICON_BYTES)
             .expect("LibraryBridge icon must be decodable")
             .to_rgba8();
@@ -383,10 +461,13 @@ impl App {
                 "games" => Screen::Games,
                 "libraries" => Screen::Libraries,
                 "storage" => Screen::Storage,
+                "settings" => Screen::Settings,
                 "help" => Screen::Help,
                 _ => Screen::Home,
             },
             back_to: Screen::Home,
+            theme,
+            system_dark,
             libraries: Vec::new(),
             candidates: Vec::new(),
             lutris: None,
@@ -1036,6 +1117,7 @@ impl App {
             (Screen::Libraries, Screen::Libraries | Screen::Review { .. }) => true,
             (Screen::Games, Screen::Games) => true,
             (Screen::Storage, Screen::Storage) => true,
+            (Screen::Settings, Screen::Settings) => true,
             (Screen::Help, Screen::Help) => true,
             _ => false,
         }
@@ -1103,6 +1185,7 @@ impl eframe::App for App {
                             (Screen::Libraries, "Steam"),
                             (Screen::Games, "Lutris"),
                             (Screen::Storage, "Storage"),
+                            (Screen::Settings, "Settings"),
                             (Screen::Help, "Help"),
                         ] {
                             let active = self.nav_active(&target);
@@ -1166,6 +1249,7 @@ impl eframe::App for App {
                     }
                     Screen::Games => self.games_screen(ui),
                     Screen::Storage => self.storage_screen(ui),
+                    Screen::Settings => self.settings_screen(ui),
                     Screen::Help => self.help_screen(ui),
                     Screen::Running { title } => self.running_screen(ui, &title),
                 }
@@ -1442,6 +1526,75 @@ impl App {
         self.refresh_lutris();
     }
 
+    fn set_theme(&mut self, theme: ThemeChoice, ctx: &egui::Context) {
+        if self.theme == theme {
+            return;
+        }
+        self.theme = theme;
+        save_theme_choice(theme);
+        configure_style(ctx, theme, self.system_dark);
+    }
+
+    fn settings_screen(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Settings");
+        ui.add_space(4.0);
+        ui.label("Change how LibraryBridge looks and where it keeps moved Proton data.");
+        ui.add_space(14.0);
+
+        surface_card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new("Appearance").size(17.0).strong());
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(
+                    "Choose System to follow your desktop, or pick a theme that stays the same.",
+                )
+                .weak(),
+            );
+            ui.add_space(8.0);
+
+            let mut choice = self.theme;
+            ui.horizontal_wrapped(|ui| {
+                for option in [
+                    ThemeChoice::System,
+                    ThemeChoice::Light,
+                    ThemeChoice::Dark,
+                ] {
+                    ui.radio_value(&mut choice, option, option.label());
+                }
+            });
+            if choice != self.theme {
+                let ctx = ui.ctx().clone();
+                self.set_theme(choice, &ctx);
+            }
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(match self.theme {
+                    ThemeChoice::System => "Using your desktop's current appearance.",
+                    ThemeChoice::Light => "Using the light theme.",
+                    ThemeChoice::Dark => "Using the dark theme.",
+                })
+                .weak(),
+            );
+        });
+        ui.add_space(10.0);
+
+        self.data_location_row(ui);
+
+        ui.add_space(4.0);
+        surface_card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new("About settings").strong());
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(
+                    "Appearance is saved for the next launch. Data location changes apply to the next scan. Hidden Lutris results can be restored from the Lutris page.",
+                )
+                .weak(),
+            );
+        });
+    }
+
     #[allow(clippy::collapsible_match)]
     fn libraries_screen(&mut self, ui: &mut egui::Ui) {
         if self.libraries.is_empty() {
@@ -1450,8 +1603,6 @@ impl App {
             ui.heading(format!("Steam libraries — {} found", self.libraries.len()));
         }
         ui.add_space(10.0);
-
-        self.data_location_row(ui);
 
         if !self.warnings.is_empty() {
             surface_card(ui, |ui| {
@@ -2514,53 +2665,91 @@ impl App {
 
     fn help_screen(&mut self, ui: &mut egui::Ui) {
         ui.heading("Help");
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(
+                "Learn what LibraryBridge changes, what it leaves alone, and how to recover safely.",
+            )
+            .weak(),
+        );
         ui.add_space(10.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (heading, body) in [
-                (
+            help_section(
+                ui,
+                "Getting started",
+                &[(
                     "Start here",
-                    "Close Steam, open Libraries, and review the scan. Choose Review repair to see the exact folders, paths, and free-space check before anything changes. Nothing is changed until you choose Repair now.",
-                ),
-                (
-                    "What a repair does",
-                    "It copies Proton's working data to a Linux filesystem, checks every file, keeps the original beside the Steam library, and leaves a link where Steam expects the data. Your game files do not move.",
-                ),
-                (
-                    "Before you repair",
-                    "Make sure Steam is closed and the destination has enough free space. The destination must be a Linux filesystem such as ext4, btrfs, or xfs. exFAT is not suitable for Proton data.",
-                ),
-                (
-                    "What stays untouched",
-                    "A repair does not move game installations or change Steam settings. It also does not fix a game that is broken for another reason, and it does not move saves stored outside Proton's prefix.",
-                ),
-                (
-                    "Backups and recovery",
-                    "The original is kept beside the library as compatdata.backup. Storage and backups shows the live copy, the original, and any unfinished copy. After you confirm a game works, you can review deleting the original. If needed, Review undo copies the moved data back.",
-                ),
-                (
-                    "If a repair is interrupted",
-                    "The app shows which step was reached. Before the final switch, stopping is safe and the original is not touched. An interrupted repair can be reviewed again from Libraries; unfinished data is kept rather than deleted automatically.",
-                ),
-                (
-                    "Finding games for Lutris",
-                    "Games scans folders for GOG and standalone Windows games that Lutris does not know about. Check the suggested executable before adding a guess. Adding a game changes Lutris only; it does not move or modify game files.",
-                ),
-                (
-                    "Unsupported filesystems",
-                    "exFAT cannot hold a Proton prefix reliably, so repair is refused. A filesystem the app cannot identify is also refused because the repair cannot be verified safely.",
-                ),
-                (
-                    "Removing LibraryBridge",
-                    "Repairs use ordinary folders and links. Removing the app does not remove your game data or stop an existing repair from working.",
-                ),
-            ] {
-                surface_card(ui, |ui| {
-                    ui.label(egui::RichText::new(heading).size(16.0).strong());
-                    ui.add_space(4.0);
-                    ui.label(body);
-                });
-                ui.add_space(12.0);
-            }
+                    "Close Steam, open Steam in LibraryBridge, and review the scan. Choose Review repair to see the folders, paths, and free-space check. Nothing is repaired until you choose Repair now.",
+                )],
+            );
+            help_section(
+                ui,
+                "Repairing a Steam library",
+                &[
+                    (
+                        "Before you repair",
+                        "Close Steam and any running game. Make sure the destination has enough free space. The destination must be a Linux filesystem such as ext4, btrfs, or xfs. exFAT is not suitable for Proton data.",
+                    ),
+                    (
+                        "What a repair does",
+                        "Proton keeps Windows game settings, prefixes, and saves in a compatdata folder beside the Steam library. LibraryBridge copies that data to a Linux filesystem, checks every file, keeps the original as a backup, and leaves a link where Steam expects it. Your game files do not move.",
+                    ),
+                    (
+                        "What stays untouched",
+                        "A repair does not move game installations, change Steam settings, or fix a game that is broken for another reason. It also does not move saves stored outside the Proton prefix.",
+                    ),
+                ],
+            );
+            help_section(
+                ui,
+                "Backups and recovery",
+                &[
+                    (
+                        "Backups and undo",
+                        "The original stays beside the Steam library. Storage shows the live copy, the original, and any unfinished copy. After you confirm the game works, you can review deleting the original. Review undo copies the moved data back to the game drive.",
+                    ),
+                    (
+                        "If a repair is interrupted",
+                        "The app shows which step was reached. Before the last step, stopping is safe and the original is not touched. You can review an interrupted repair again from Steam. Unfinished data is kept rather than deleted automatically.",
+                    ),
+                ],
+            );
+            help_section(
+                ui,
+                "Adding games to Lutris",
+                &[
+                    (
+                        "Finding games",
+                        "The Lutris page scans folders for GOG and standalone Windows games that Lutris does not know about. Check the suggested executable before adding a guess. Adding a game changes Lutris only. It does not move or modify game files.",
+                    ),
+                    (
+                        "Importing and hiding results",
+                        "LibraryBridge opens Lutris when needed and shows its dialog for each game. Confirm each game there. If a result is a launcher, helper, or folder you do not want to import, open Details and choose Hide from list. Show hidden results restores hidden scan results.",
+                    ),
+                ],
+            );
+            help_section(
+                ui,
+                "Settings",
+                &[(
+                    "Appearance and data location",
+                    "Use Settings to choose System, Light, or Dark appearance and to choose where moved Proton data lives. Data location changes apply to the next scan. Hidden Lutris results can be restored from the Lutris page.",
+                )],
+            );
+            help_section(
+                ui,
+                "Safety and limits",
+                &[
+                    (
+                        "Unsupported filesystems",
+                        "exFAT cannot hold a Proton prefix reliably, so repair is refused. A filesystem the app cannot identify is also refused because the repair cannot be verified safely.",
+                    ),
+                    (
+                        "Removing LibraryBridge",
+                        "Repairs use ordinary folders and links. Removing the app does not remove your game data or stop an existing repair from working.",
+                    ),
+                ],
+            );
         });
     }
 
