@@ -287,10 +287,19 @@ struct App {
     /// the tool's terminal output.
     plan: Option<backend::Plan>,
     stored: Vec<backend::Stored>,
+    /// Whether the current storage list came back from a successful
+    /// measurement. An empty list can be a real result, not just a loading
+    /// state.
+    storage_loaded: bool,
+    storage_error: bool,
     /// Notes the scan produced, such as metadata it could not read. Shown, not
     /// swallowed: an empty library list and an unreadable one look identical
     /// otherwise.
     warnings: Vec<String>,
+    /// Whether the first result from the Steam library scan has arrived.
+    /// This is separate from `scan_complete`: a finished scan can still be
+    /// incomplete because a metadata file was unreadable.
+    libraries_loaded: bool,
     scan_complete: bool,
     /// Progress of a Lutris folder scan, when one is running: (done, total).
     /// `None` when nothing is scanning.
@@ -366,7 +375,10 @@ impl App {
             plan_id: None,
             plan: None,
             stored: Vec::new(),
+            storage_loaded: false,
+            storage_error: false,
             warnings: Vec::new(),
+            libraries_loaded: false,
             scan_complete: true,
             scanning: None,
             phase: None,
@@ -409,6 +421,7 @@ impl App {
     }
 
     fn refresh_libraries(&mut self) {
+        self.libraries_loaded = false;
         let sender = self.sender.clone();
         let data_dir = self.data_dir.clone();
         backend::spawn(sender, move |tx| {
@@ -475,6 +488,7 @@ impl App {
             },
         ];
         self.warnings = vec!["One optional Steam metadata file could not be read.".to_string()];
+        self.libraries_loaded = true;
         self.scan_complete = false;
         self.lutris = Some(Ok("Lutris detected".to_string()));
         self.roots = vec!["/run/media/alex/Games".to_string()];
@@ -568,6 +582,8 @@ impl App {
             data_free_bytes: Some(142_000_000_000),
             data_root: "/home/alex/.local/share/librarybridge".to_string(),
         }];
+        self.storage_loaded = true;
+        self.storage_error = false;
         self.scanning = None;
         self.busy = false;
     }
@@ -745,13 +761,16 @@ impl App {
     fn status_line(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
 
-        parts.push(match self.libraries.len() {
-            0 if self.busy => "Looking for Steam".to_string(),
-            0 => "No Steam libraries".to_string(),
-            1 => "1 library".to_string(),
-            n => format!("{n} libraries"),
+        parts.push(if !self.libraries_loaded {
+            "Looking for Steam".to_string()
+        } else {
+            match self.libraries.len() {
+                0 => "No Steam libraries".to_string(),
+                1 => "1 library".to_string(),
+                n => format!("{n} libraries"),
+            }
         });
-        if !self.scan_complete {
+        if self.libraries_loaded && !self.scan_complete {
             parts.push("scan incomplete".to_string());
         }
         if let Some((done, total)) = self.scanning {
@@ -760,7 +779,8 @@ impl App {
         }
         parts.push(match &self.lutris {
             Some(Ok(_)) => "Lutris found".to_string(),
-            _ => "no Lutris".to_string(),
+            Some(Err(_)) => "no Lutris".to_string(),
+            None => "looking for Lutris".to_string(),
         });
         if !self.roots.is_empty() {
             let missing = self.candidates.iter().filter(|c| c.eligible).count();
@@ -779,9 +799,13 @@ impl App {
                 Update::Libraries(Ok(scan)) => {
                     self.libraries = scan.libraries;
                     self.warnings = scan.warnings;
+                    self.libraries_loaded = true;
                     self.scan_complete = scan.complete;
                 }
-                Update::Libraries(Err(message)) => self.error = Some(message),
+                Update::Libraries(Err(message)) => {
+                    self.libraries_loaded = true;
+                    self.error = Some(message);
+                }
                 Update::Candidates(Ok(rows)) => {
                     self.scanning = None;
                     self.selected.retain(|id| rows.iter().any(|c| &c.id == id));
@@ -798,10 +822,18 @@ impl App {
                     self.plan = Some(plan);
                 }
                 Update::Plan(Err(_)) => self.plan = None,
-                Update::Storage(Ok(rows)) => self.stored = rows,
+                Update::Storage(Ok(rows)) => {
+                    self.stored = rows;
+                    self.storage_loaded = true;
+                    self.storage_error = false;
+                }
                 Update::Evidence(Ok(rows)) => self.evidence = rows,
                 Update::Evidence(Err(message)) => self.error = Some(message),
-                Update::Storage(Err(message)) => self.error = Some(message),
+                Update::Storage(Err(message)) => {
+                    self.storage_loaded = false;
+                    self.storage_error = true;
+                    self.error = Some(message);
+                }
                 Update::Event(phase) => self.phase = Some(phase),
                 Update::Line(line) => {
                     // Bounded, so a long copy cannot grow this without limit.
@@ -947,7 +979,9 @@ impl App {
         if self.busy {
             return;
         }
-        if matches!(screen, Screen::Storage) && self.stored.is_empty() {
+        if matches!(screen, Screen::Storage) && !self.storage_loaded {
+            self.storage_loaded = false;
+            self.storage_error = false;
             self.busy = true;
             let data_dir = self.data_dir.clone();
             backend::spawn(self.sender.clone(), move |tx| {
@@ -1109,10 +1143,10 @@ impl App {
         // The same colours as the library list, so a glance at the home page
         // and a glance at the list read the same way.
         let ok_green = egui::Color32::from_rgb(0x2E, 0x7D, 0x32);
-        let libraries_rich = if self.busy && self.libraries.is_empty() {
-            egui::RichText::new("Looking for Steam...").weak()
+        let libraries_rich = if !self.libraries_loaded {
+            egui::RichText::new("Looking for Steam libraries...").weak()
         } else if self.libraries.is_empty() && !self.scan_complete {
-            egui::RichText::new("The scan could not read everything, and found nothing so far")
+            egui::RichText::new("The scan was incomplete and found no Steam libraries")
                 .color(ui.visuals().warn_fg_color)
                 .strong()
         } else if self.libraries.is_empty() {
@@ -1136,7 +1170,8 @@ impl App {
             .strong()
         };
         let games_status = match &self.lutris {
-            Some(Err(_)) | None => egui::RichText::new("Lutris was not found").weak(),
+            None => egui::RichText::new("Checking for Lutris...").weak(),
+            Some(Err(_)) => egui::RichText::new("Lutris was not found").weak(),
             Some(Ok(_)) if self.roots.is_empty() => {
                 egui::RichText::new("Choose a folder to look in").weak()
             }
@@ -1324,6 +1359,8 @@ impl App {
         self.error = None;
         self.data_dir = chosen;
         self.data_dir_input.clear();
+        self.storage_loaded = false;
+        self.storage_error = false;
         save_data_dir(&self.data_dir);
         self.refresh_libraries();
         self.refresh_lutris();
@@ -1332,6 +1369,8 @@ impl App {
     fn clear_data_dir(&mut self) {
         self.data_dir = String::new();
         self.data_dir_input.clear();
+        self.storage_loaded = false;
+        self.storage_error = false;
         let _ = std::fs::remove_file(saved_data_dir_path());
         self.refresh_libraries();
         self.refresh_lutris();
@@ -1363,15 +1402,25 @@ impl App {
         }
 
         if self.libraries.is_empty() {
-            ui.label(if self.busy {
-                "Looking for Steam..."
-            } else {
-                "No Steam libraries found."
+            surface_card(ui, |ui| {
+                ui.set_width(ui.available_width());
+                if !self.libraries_loaded {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Looking for Steam libraries...");
+                    });
+                } else {
+                    ui.label(egui::RichText::new("No Steam libraries found").strong());
+                    ui.add_space(4.0);
+                    ui.label(
+                        "Make sure Steam is installed and has a library, then try again. LibraryBridge checks native and Flatpak Steam locations.",
+                    );
+                }
+                ui.add_space(8.0);
+                if primary_button(ui, "Scan again").clicked() {
+                    self.refresh_libraries();
+                }
             });
-            ui.add_space(6.0);
-            if primary_button(ui, "Look again").clicked() {
-                self.refresh_libraries();
-            }
             return;
         }
 
@@ -1658,7 +1707,16 @@ impl App {
         ui.add_space(6.0);
 
         match &self.lutris {
-            Some(Err(_)) | None => {
+            None => {
+                surface_card(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Checking for Lutris...");
+                    });
+                });
+                ui.add_space(10.0);
+            }
+            Some(Err(_)) => {
                 surface_card(ui, |ui| {
                     ui.label(egui::RichText::new("Lutris was not found").strong());
                     ui.add_space(3.0);
@@ -2156,7 +2214,14 @@ impl App {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new("Storage overview").strong());
-                    if let Some(bytes) = free {
+                    if !self.storage_loaded && !self.storage_error {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Measuring storage...");
+                        });
+                    } else if self.storage_error {
+                        ui.label(egui::RichText::new("Storage could not be measured").weak());
+                    } else if let Some(bytes) = free {
                         ui.label(
                             egui::RichText::new(format!(
                                 "{} free where moved copies live",
@@ -2164,12 +2229,14 @@ impl App {
                             ))
                             .weak(),
                         );
-                    } else if self.stored.is_empty() {
-                        ui.label(egui::RichText::new("Sizes have not been measured yet").weak());
+                    } else {
+                        ui.label(egui::RichText::new("No moved data or backups found").weak());
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if primary_button_enabled(ui, "Measure now", !self.busy).clicked() {
+                        self.storage_loaded = false;
+                        self.storage_error = false;
                         self.busy = true;
                         let data_dir = self.data_dir.clone();
                         backend::spawn(self.sender.clone(), move |tx| {
@@ -2190,16 +2257,31 @@ impl App {
         });
         ui.add_space(12.0);
 
-        if self.stored.is_empty() {
+        if self.storage_error {
             surface_card(ui, |ui| {
                 ui.label(
                     egui::RichText::new(
-                        "Nothing measured yet. Sizes are read on demand, because walking every \
-                         backup on an external drive is slow.",
+                        "No storage data is available yet. Fix the message above, then try Measure now again.",
                     )
                     .weak(),
                 );
             });
+            return;
+        }
+
+        if self.stored.is_empty() && self.storage_loaded {
+            surface_card(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "No moved Proton data or backups were found. This page will show them after a repair creates a moved copy or keeps an original.",
+                    )
+                    .weak(),
+                );
+            });
+            return;
+        }
+
+        if !self.storage_loaded {
             return;
         }
 
@@ -2506,6 +2588,8 @@ impl App {
             // from the storage page goes back there, and that page's numbers
             // must be re-measured or they will describe a world that changed.
             if matches!(self.back_to, Screen::Storage) {
+                self.storage_loaded = false;
+                self.storage_error = false;
                 self.busy = true;
                 let data_dir = self.data_dir.clone();
                 backend::spawn(self.sender.clone(), move |tx| {
