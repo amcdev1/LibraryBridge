@@ -421,6 +421,11 @@ struct App {
     /// The window re-scans the games list only for this, so a finished scan
     /// does not immediately launch another scan (which would loop forever).
     just_imported: bool,
+    /// Launch and filesystem warnings belonging to the games in the current
+    /// `lutris import`. Captured at the moment the user commits, so the
+    /// post-import screen can repeat them where the user is most likely to see
+    /// them: right after the "No game files or prefixes were changed." line.
+    import_warnings: Vec<String>,
     /// The library a run is about, so its evidence can be shown afterwards.
     subject: Option<String>,
     evidence: Vec<backend::EvidenceRow>,
@@ -503,6 +508,7 @@ impl App {
             running: backend::Running::default(),
             cancelled: false,
             just_imported: false,
+            import_warnings: Vec::new(),
             subject: None,
             evidence: Vec::new(),
             sender,
@@ -1049,6 +1055,30 @@ impl App {
             .collect();
         if chosen.is_empty() {
             return;
+        }
+        // Hold onto the warnings of what is being added. The post-import
+        // screen shows them in yellow after the tool's "No game files or
+        // prefixes were changed." line, where the user looks once the dialog
+        // is done, so a problem that only surfaces at first launch is seen
+        // before the user has moved on. Deduplicate: several games often
+        // share the same warning.
+        self.import_warnings = Vec::new();
+        for candidate in &chosen {
+            let single = if candidate.filesystem_warning.is_empty() {
+                None
+            } else {
+                Some(candidate.filesystem_warning.as_str())
+            };
+            for warning in candidate
+                .launch_warnings
+                .iter()
+                .map(String::as_str)
+                .chain(single)
+            {
+                if !self.import_warnings.contains(&warning.to_string()) {
+                    self.import_warnings.push(warning.to_string());
+                }
+            }
         }
         let games: Vec<serde_json::Value> = chosen
             .iter()
@@ -2886,6 +2916,23 @@ impl App {
         });
         ui.add_space(10.0);
         log_view(ui, &self.log, 460.0);
+        // The tool ends its import with "No game files or prefixes were
+        // changed." A warning that only appears at first launch is easy to
+        // miss if it is read before the games are added, so it is repeated
+        // here, straight after that line, when the import went through.
+        if self.finished == Some(true) && is_lutris && !self.import_warnings.is_empty() {
+            ui.add_space(8.0);
+            for warning in &self.import_warnings {
+                ui.colored_label(ui.visuals().warn_fg_color, format!("Note: {warning}"));
+            }
+            ui.label(
+                egui::RichText::new(
+                    "These show up the first time each game runs. Open the game in Lutris and \
+                     follow the note above if it does, before removing any backups.",
+                )
+                .weak(),
+            );
+        }
         if self.finished == Some(true) && !self.evidence.is_empty() {
             ui.add_space(14.0);
             ui.label(egui::RichText::new("What this does and does not establish").strong());
