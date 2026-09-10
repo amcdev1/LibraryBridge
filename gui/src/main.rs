@@ -1127,14 +1127,14 @@ impl App {
 
         ui.add_space(14.0);
         ui.label(
-            egui::RichText::new("Your library, at a glance")
+            egui::RichText::new("Your game libraries, at a glance")
                 .size(28.0)
                 .strong(),
         );
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new(
-                "Keep Proton data on the filesystem where it belongs, and bring every installed game into view.",
+                "See what needs attention in Steam, repair Proton data, and find games missing from Lutris.",
             )
             .size(15.0),
         );
@@ -2194,9 +2194,9 @@ impl App {
         ui.heading("Storage and backups");
         ui.add_space(4.0);
         ui.label(
-            "Originals are kept on purpose, and a repair never deletes them. Once a game has \
-             launched and loaded a save from the moved copy, you can delete an original here to \
-             reclaim its space — or move the data back the other way.",
+            "A repair keeps the original as a backup and never deletes it. After the game has \
+             launched and saved successfully from the moved copy, you can delete the backup \
+             here. You can also use Undo to copy the data back to the game drive.",
         );
         ui.add_space(14.0);
 
