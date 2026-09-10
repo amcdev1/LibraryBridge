@@ -49,6 +49,11 @@ pub struct Candidate {
     pub eligible: bool,
     pub blocking_reason: Option<String>,
     pub filesystem_warning: Option<String>,
+    /// Launch-time pitfalls that can be read off the game folder itself,
+    /// independent of which filesystem holds it. These are exactly the kind
+    /// of thing that makes a freshly imported game close itself instantly
+    /// with a clean exit code and no error message.
+    pub launch_warnings: Vec<String>,
     /// Other executables in the same folder, for when the guess is wrong.
     pub alternatives: Vec<PathBuf>,
 }
@@ -147,6 +152,7 @@ pub fn scan(
     for candidate in &mut candidates {
         candidate.in_lutris = matches_existing(candidate, existing);
         candidate.filesystem_warning = filesystem_warning(candidate);
+        candidate.launch_warnings = launch_warnings(candidate);
         candidate.blocking_reason = import_blocker(candidate);
         candidate.eligible = candidate.blocking_reason.is_none();
     }
@@ -239,6 +245,59 @@ fn filesystem_warning(candidate: &Candidate) -> Option<String> {
     }
 }
 
+/// Problems that will only show up once the game is launched, read off the
+/// folder itself so the scan can warn before the user adds the game.
+///
+/// These are the quietly-fatal ones: a game that closes its window immediately
+/// with exit code 0, which the log hides because stderr is turned off. Two are
+/// common enough in scanned folders to deserve their own message.
+fn launch_warnings(candidate: &Candidate) -> Vec<String> {
+    let Some(exe) = candidate.exe.as_deref() else {
+        return Vec::new();
+    };
+    let Some(folder) = exe.parent() else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_lowercase))
+        .collect();
+    let has = |needle: &str| names.iter().any(|name| name == needle);
+
+    let mut warnings = Vec::new();
+
+    // A game that ships one of these DLLs owns the loading behaviour for it.
+    // Lutris's "Enable D3D Extras" option marks the whole d3dcompiler/d3dx
+    // family as native-only by default, which makes Wine skip the bundled copy
+    // and the game die with "DLL not found" (c0000135) before a window opens.
+    if names.iter().any(|name| name.starts_with("d3dcompiler_") && name.ends_with(".dll")) {
+        warnings.push(
+            "This game ships its own d3dcompiler DLL. Lutris's default \"Enable D3D Extras\" \
+             option loads that family as native-only, so Wine skips the bundled copy and the \
+             game closes itself immediately with \"DLL not found\" (status c0000135). \
+             Turn OFF \"Enable D3D Extras\" in the game's Lutris runner options before running it."
+                .to_string(),
+        );
+    }
+
+    // A steam_emu.ini marks a launcher-emulation (DRM-free) build whose Steam
+    // API is replaced by a shim. The shim needs the lsteamclient override, or
+    // the game reports "unable to create interface ISteamUser" and exits.
+    if has("steam_emu.ini") {
+        warnings.push(
+            "This game is a launcher-emulation build with its own Steam API shim. If it reports \
+             \"unable to create interface ISteamUser\" and exits, add a DLL override set \
+             lsteamclient = d in the game's Lutris runner options."
+                .to_string(),
+        );
+    }
+
+    warnings
+}
+
 // ------------------------------------------------------------ Steam provider
 
 fn steam_games(library: &steam::Library) -> Vec<Candidate> {
@@ -263,6 +322,7 @@ fn steam_games(library: &steam::Library) -> Vec<Candidate> {
             eligible: true,
             blocking_reason: None,
             filesystem_warning: None,
+            launch_warnings: Vec::new(),
             alternatives: Vec::new(),
         });
     }
@@ -414,6 +474,7 @@ fn gog_candidate(folder: &Path, files: &[PathBuf]) -> Option<Candidate> {
         eligible: true,
         blocking_reason: None,
         filesystem_warning: None,
+        launch_warnings: Vec::new(),
         alternatives: Vec::new(),
     })
 }
@@ -552,6 +613,7 @@ fn windows_candidate(folder: &Path, executables: &[&PathBuf]) -> Option<Candidat
         eligible: true,
         blocking_reason: None,
         filesystem_warning: None,
+        launch_warnings: Vec::new(),
         alternatives: scored
             .iter()
             .skip(1)
@@ -613,6 +675,7 @@ fn linux_candidate(folder: &Path, files: &[PathBuf]) -> Option<Candidate> {
         eligible: true,
         blocking_reason: None,
         filesystem_warning: None,
+        launch_warnings: Vec::new(),
         alternatives: Vec::new(),
     })
 }
@@ -643,5 +706,73 @@ mod tests {
         assert!(is_noise_dir(Path::new("/games/x/DirectX")));
         assert!(is_noise_dir(Path::new("/games/x/.hidden")));
         assert!(!is_noise_dir(Path::new("/games/x/Binaries")));
+    }
+
+    #[test]
+    fn flags_a_bundled_d3dcompiler_as_a_launch_warning() {
+        let dir = std::env::temp_dir().join(format!("lb-d3d-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("Game.exe"), "x").unwrap();
+        fs::write(dir.join("d3dcompiler_43.dll"), "x").unwrap();
+        let candidate = Candidate {
+            exe: Some(dir.join("Game.exe")),
+            working_dir: Some(dir.clone()),
+            ..base_candidate()
+        };
+        let warnings = launch_warnings(&candidate);
+        assert!(
+            warnings.iter().any(|w| w.contains("Enable D3D Extras")),
+            "{warnings:?}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn flags_a_steam_emulation_build() {
+        let dir = std::env::temp_dir().join(format!("lb-steam-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("Game.exe"), "x").unwrap();
+        fs::write(dir.join("steam_emu.ini"), "x").unwrap();
+        let candidate = Candidate {
+            exe: Some(dir.join("Game.exe")),
+            ..base_candidate()
+        };
+        let warnings = launch_warnings(&candidate);
+        assert!(warnings.iter().any(|w| w.contains("ISteamUser")), "{warnings:?}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_plain_folder_gets_no_launch_warnings() {
+        let dir = std::env::temp_dir().join(format!("lb-plain-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("Game.exe"), "x").unwrap();
+        let candidate = Candidate {
+            exe: Some(dir.join("Game.exe")),
+            ..base_candidate()
+        };
+        assert!(launch_warnings(&candidate).is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn base_candidate() -> Candidate {
+        Candidate {
+            id: "g".into(),
+            name: "Game".into(),
+            runner: "wine".into(),
+            source: "folder",
+            exe: None,
+            appid: None,
+            prefix: None,
+            working_dir: None,
+            confidence: Confidence::High,
+            reasons: Vec::new(),
+            in_lutris: false,
+            eligible: true,
+            blocking_reason: None,
+            filesystem_warning: None,
+            launch_warnings: Vec::new(),
+            alternatives: Vec::new(),
+        }
     }
 }

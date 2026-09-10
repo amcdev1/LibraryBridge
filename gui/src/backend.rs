@@ -89,6 +89,7 @@ pub struct Candidate {
     pub eligible: bool,
     pub blocking_reason: String,
     pub filesystem_warning: String,
+    pub launch_warnings: Vec<String>,
     pub alternatives: Vec<String>,
     pub reasons: Vec<String>,
 }
@@ -494,6 +495,7 @@ pub fn stream_candidates(sender: &Sender<Update>, roots: &[String], data_dir: &s
                 eligible: row.get("eligible").and_then(Value::as_bool).unwrap_or(true),
                 blocking_reason: text(row, "blocking_reason"),
                 filesystem_warning: text(row, "filesystem_warning"),
+                launch_warnings: strings(row, "warnings"),
                 alternatives: strings(row, "alternatives"),
                 reasons: strings(row, "reasons"),
             })

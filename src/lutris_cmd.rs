@@ -188,6 +188,10 @@ fn scan(options: &Options) -> Result<i32, String> {
             println!("      warning     {warning}");
             println!("                  adding it to Lutris will not fix that on its own");
         }
+        for warning in &candidate.launch_warnings {
+            println!("      launch      {warning}");
+            println!("                  this shows up the first time you run it");
+        }
         if candidate.in_lutris {
             println!("      note        Lutris already has this one");
         }
@@ -271,6 +275,7 @@ fn candidate_json(candidate: &Candidate, indent: &str) -> String {
          {indent}  \"eligible\": {},\n\
          {indent}  \"blocking_reason\": {},\n\
          {indent}  \"filesystem_warning\": {},\n\
+         {indent}  \"warnings\": [{}],\n\
          {indent}  \"alternatives\": [{}],\n\
          {indent}  \"reasons\": [{}]\n\
          {indent}}}",
@@ -296,6 +301,12 @@ fn candidate_json(candidate: &Candidate, indent: &str) -> String {
             Some(warning) => quote(warning),
             None => "null".to_string(),
         },
+        candidate
+            .launch_warnings
+            .iter()
+            .map(|w| quote(w))
+            .collect::<Vec<_>>()
+            .join(", "),
         candidate
             .alternatives
             .iter()

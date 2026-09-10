@@ -544,6 +544,13 @@ impl App {
                 eligible: true,
                 blocking_reason: String::new(),
                 filesystem_warning: String::new(),
+                launch_warnings: vec![
+                    "This game ships its own d3dcompiler DLL. Lutris's default \"Enable D3D Extras\" \
+                     option loads that family as native-only, so Wine skips the bundled copy and the \
+                     game closes itself immediately with \"DLL not found\" (status c0000135). Turn OFF \
+                     \"Enable D3D Extras\" in the game's Lutris runner options before running it."
+                        .to_string(),
+                ],
                 alternatives: Vec::new(),
                 reasons: vec!["GOG metadata identifies the executable.".to_string()],
             },
@@ -562,6 +569,7 @@ impl App {
                 blocking_reason: String::new(),
                 filesystem_warning:
                     "The game is on NTFS; Proton data still needs a Linux filesystem.".to_string(),
+                launch_warnings: Vec::new(),
                 alternatives: vec![
                     "/run/media/alex/Games/Stardew Valley/StardewModdingAPI.exe".to_string()
                 ],
@@ -583,6 +591,7 @@ impl App {
                 eligible: true,
                 blocking_reason: String::new(),
                 filesystem_warning: String::new(),
+                launch_warnings: Vec::new(),
                 alternatives: Vec::new(),
                 reasons: vec!["The executable was selected from several files.".to_string()],
             },
@@ -600,6 +609,7 @@ impl App {
                 eligible: false,
                 blocking_reason: String::new(),
                 filesystem_warning: String::new(),
+                launch_warnings: Vec::new(),
                 alternatives: Vec::new(),
                 reasons: Vec::new(),
             },
@@ -2235,6 +2245,13 @@ impl App {
                     ui.label(
                         egui::RichText::new("Adding it to Lutris does not fix that on its own.")
                             .weak(),
+                    );
+                }
+                for warning in &candidate.launch_warnings {
+                    ui.add_space(4.0);
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!("Watch for: {warning}"),
                     );
                 }
                 ui.add_space(4.0);
