@@ -283,14 +283,25 @@ fn launch_warnings(candidate: &Candidate) -> Vec<String> {
         );
     }
 
-    // A steam_emu.ini marks a launcher-emulation (DRM-free) build whose Steam
-    // API is replaced by a shim. The shim needs the lsteamclient override, or
-    // the game reports "unable to create interface ISteamUser" and exits.
-    if has("steam_emu.ini") {
+    // A launcher-emulation (DRM-free) build replaces Steam with a shim. That
+    // shows up as steam_emu.ini for Goldberg-style emulators, and as a small
+    // steam_api64.dll / steamclient64.dll stub next to the exe for others.
+    // Real Steam games do not bundle those files beside the game. The shim
+    // needs the lsteamclient override, or the game reports "unable to create
+    // interface ISteamUser"/"unable to load steamclient64.dll" and exits.
+    // `ISteamUser` is an interface, not a DLL, so it is never a valid override
+    // key; `lsteamclient` is the DLL the request actually goes through.
+    let steam_shim = ["steam_emu.ini", "steam_api64.dll", "steamclient64.dll"]
+        .iter()
+        .any(|name| has(name));
+    if steam_shim {
         warnings.push(
-            "This game is a launcher-emulation build with its own Steam API shim. If it reports \
-             \"unable to create interface ISteamUser\" and exits, add a DLL override set \
-             lsteamclient = d in the game's Lutris runner options."
+            "This game is a launcher-emulation build with its own Steam API shim \
+             (found steam_emu.ini or steam_api64.dll / steamclient64.dll beside the game). \
+             If it reports \"unable to create interface ISteamUser\" or \"unable to load \
+             steamclient64.dll\" and exits, add a DLL override lsteamclient = d in the game's \
+             Lutris runner options. Note: ISteamUser is an interface, not a DLL, so that key \
+             does nothing."
                 .to_string(),
         );
     }
@@ -738,7 +749,32 @@ mod tests {
             ..base_candidate()
         };
         let warnings = launch_warnings(&candidate);
+        assert!(warnings.iter().any(|w| w.contains("lsteamclient")), "{warnings:?}");
         assert!(warnings.iter().any(|w| w.contains("ISteamUser")), "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("ISteamUser") && w.contains("not a DLL")),
+            "the warning should tell the user not to use ISteamUser as an override key: {warnings:?}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn flags_a_bundled_steam_api_shim() {
+        let dir = std::env::temp_dir().join(format!("lb-steamapi-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("Game.exe"), "x").unwrap();
+        fs::write(dir.join("steam_api64.dll"), "x").unwrap();
+        let candidate = Candidate {
+            exe: Some(dir.join("Game.exe")),
+            ..base_candidate()
+        };
+        let warnings = launch_warnings(&candidate);
+        assert!(
+            warnings.iter().any(|w| w.contains("steam_api64.dll")),
+            "steam_api64.dll next to the exe should be detected as a shim: {warnings:?}"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
