@@ -2435,14 +2435,18 @@ impl App {
         // title the window chose.
         let is_lutris = title.starts_with("Adding");
         surface_card(ui, |ui| {
-            phase_stepper(ui, self.phase.as_ref(), self.finished);
+            operation_stepper(ui, is_lutris, self.phase.as_ref(), self.finished);
             ui.add_space(10.0);
             match self.finished {
                 None => {
                     let phase = self.phase.clone();
-                    ui.label(match &phase {
-                        Some(phase) => phase.label(),
-                        None => "Starting",
+                    ui.label(if is_lutris {
+                        "Preparing Lutris import"
+                    } else {
+                        match &phase {
+                            Some(phase) => phase.label(),
+                            None => "Starting",
+                        }
                     });
                     if let Some(backend::Phase::Progress { files, bytes }) = &phase {
                         ui.label(
@@ -2882,9 +2886,21 @@ fn diagnosis(library: &backend::Library) -> String {
     }
 }
 
-fn phase_stepper(ui: &mut egui::Ui, phase: Option<&backend::Phase>, finished: Option<bool>) {
+fn operation_stepper(
+    ui: &mut egui::Ui,
+    is_lutris: bool,
+    phase: Option<&backend::Phase>,
+    finished: Option<bool>,
+) {
+    let labels: &[&str] = if is_lutris {
+        &["Prepare", "Open Lutris", "Add games", "Done"]
+    } else {
+        &["Prepare", "Copy", "Verify", "Switch", "Done"]
+    };
     let current = if finished == Some(true) {
-        4
+        labels.len() - 1
+    } else if is_lutris {
+        0
     } else {
         match phase {
             Some(backend::Phase::Preparing) => 0,
@@ -2895,31 +2911,23 @@ fn phase_stepper(ui: &mut egui::Ui, phase: Option<&backend::Phase>, finished: Op
             None => 0,
         }
     };
-    let labels = ["Prepare", "Copy", "Verify", "Switch", "Done"];
 
     ui.horizontal_wrapped(|ui| {
         for (index, label) in labels.iter().enumerate() {
-            let complete = index < current || (index == 4 && finished == Some(true));
-            let active = index == current && finished != Some(false);
-            let color = if complete || active {
-                ui.visuals().selection.bg_fill
-            } else {
-                ui.visuals().weak_text_color()
-            };
-            let marker = if complete {
-                "✓"
+            let complete = index < current || (index == labels.len() - 1 && finished == Some(true));
+            let active = index == current && finished != Some(true);
+            let tone = if finished == Some(false) && active {
+                BadgeTone::Danger
+            } else if complete {
+                BadgeTone::Success
             } else if active {
-                "•"
+                BadgeTone::Warning
             } else {
-                "○"
+                BadgeTone::Neutral
             };
-            ui.label(
-                egui::RichText::new(format!("{marker} {label}"))
-                    .color(color)
-                    .strong(),
-            );
+            status_pill(ui, format!("{}. {label}", index + 1), tone);
             if index + 1 < labels.len() {
-                ui.label(egui::RichText::new("›").weak());
+                ui.label(egui::RichText::new("> ").weak());
             }
         }
     });
