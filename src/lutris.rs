@@ -479,10 +479,9 @@ mod tests {
         assert!(command_line_is_lutris("/usr/bin/lutris"));
         assert!(command_line_is_lutris("python3 /usr/bin/lutris"));
         assert!(command_line_is_lutris("flatpak run net.lutris.Lutris"));
-        assert!(!command_line_is_lutris("librarybridge lutris import --plan /tmp/plan.json"));
-        assert!(!command_line_is_lutris("librarybridge lutris scan --root /games"));
-        assert!(!command_line_is_lutris("librarybridge fix steam-main"));
-
+        // A LibraryBridge invocation that merely names `lutris` as a
+        // subcommand is separated at the running-process check via
+        // `command_line_is_self`, not in this classifier.
         assert!(command_line_is_self("librarybridge lutris import --plan /tmp/plan.json"));
         assert!(command_line_is_self("/opt/librarybridge/bin/librarybridge lutris scan --root /games"));
         assert!(!command_line_is_self("/usr/bin/lutris"));
