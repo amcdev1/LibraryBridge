@@ -28,6 +28,7 @@ Desktop.ini
 /assets/branding/concepts/
 
 # Local documentation and review material
+/docs/
 
 # Python bytecode
 __pycache__/
