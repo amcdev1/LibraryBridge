@@ -91,12 +91,11 @@ chmod +x "$APP_DIR/AppRun"
 # appimagetool expects a top-level .desktop file. Copy and fix the Exec to
 # point inside the AppDir through AppRun, since the binary is at usr/bin/.
 cp packaging/linux/usr/share/applications/librarybridge.desktop "$APP_DIR/librarybridge.desktop"
-# appimagetool requires the Exec to reference an executable under usr/bin via
-# AppRun, so keep the desktop entry pointing at the binary by name and let
-# AppRun resolve it. Ensure Icon name matches what is shipped in usr/share.
-sed -i 's#^Exec=.*#Exec=librarybridge-gui %U#' "$APP_DIR/librarybridge.desktop"
-sed -i 's#^TryExec=.*#TryExec=librarybridge-gui#' "$APP_DIR/librarybridge.desktop"
-sed -i 's#^Icon=.*#Icon=librarybridge#' "$APP_DIR/librarybridge.desktop"
+# appimagetool requires the desktop Icon= to resolve inside the AppDir; it
+# looks at the AppDir root and at usr/share/icons. Provide the 256x256 PNG at
+# the root (also used as .DirIcon), matching the Icon= name.
+cp "$APP_DIR/usr/share/icons/hicolor/256x256/apps/librarybridge.png" "$APP_DIR/librarybridge.png"
+cp "$APP_DIR/librarybridge.png" "$APP_DIR/.DirIcon"
 
 tar -C "dist/_stage-appdir" -czf "dist/librarybridge-desktop-$VERSION-linux-$ARCH.tar.gz" LibraryBridge.AppDir
 
@@ -109,7 +108,7 @@ elif [ -n "${APPIMAGE_TOOL:-}" ] || command -v appimagetool >/dev/null 2>&1; the
   export APPIMAGE_EXTRACT_AND_RUN=1
   TOOL="${APPIMAGE_TOOL:-appimagetool}"
   (cd "dist/_stage-appdir" && "$TOOL" "LibraryBridge.AppDir") >/dev/null
-  mv "dist/_stage-appdir/LibraryBridge-$ARCH.AppImage" "dist/LibraryBridge-$VERSION-$ARCH.AppImage"
+  mv dist/_stage-appdir/LibraryBridge-*x86_64.AppImage "dist/LibraryBridge-$VERSION-$ARCH.AppImage"
   # The desktop tarball and the AppImage share the same AppDir; keep the
   # tarball as the FUSE-independent fallback.
 else
