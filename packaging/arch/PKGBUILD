@@ -19,7 +19,7 @@ optdepends=(
     'lutris: import GOG and standalone games into Lutris'
 )
 source=("$pkgname-$pkgver.tar.gz::https://github.com/amcdev7/LibraryBridge/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('ad23595e8442a4e46b39638c94845eee3c1bd4cb083230a8cae1f76b0669fc8d')
+sha256sums=('98ab81ff03b58f43f24171bf8a2e47d63c93500c7d94cc210d4217c65919b0e7')
 
 build() {
     cd "$srcdir/LibraryBridge-$pkgver"
