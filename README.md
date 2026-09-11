@@ -43,21 +43,55 @@ and saves are not moved.
 - Rust and Cargo to build from source
 - A Linux filesystem with enough free space for the moved Proton data
 
-## Install from source
+## Installation
 
-This is only needed if you want to build from source rather than use a
-release. The [latest release](https://github.com/amcdev7/LibraryBridge/releases/latest)
-includes:
+### Linux downloads
 
-- **LibraryBridge-*-x86_64.AppImage** — desktop GUI, requires FUSE
-- **librarybridge-desktop-*-linux-x86_64.tar.gz** — desktop GUI, no FUSE
-  needed; extract and run `LibraryBridge.AppDir/AppRun`
-- **librarybridge-cli-*-linux-x86_64.tar.gz** — command-line tool, no display
-  server needed; extract and run `librarybridge`
+Download the [latest release](https://github.com/amcdev7/LibraryBridge/releases/latest).
 
-For the AppImage: make it executable (`chmod +x LibraryBridge-*.AppImage`) and
-run it. If your system cannot mount the AppImage, use
+Available downloads:
+
+- AppImage desktop build; requires FUSE
+- Portable desktop tarball; no FUSE required
+- Command-line tarball; no display server required
+- Source archive
+
+See the release page for checksums, recovery instructions, SBOM, and
+third-party notices.
+
+For the AppImage, make it executable and run it:
+
+```bash
+chmod +x LibraryBridge-0.1.0-x86_64.AppImage
+./LibraryBridge-0.1.0-x86_64.AppImage
+```
+
+If your system cannot mount the AppImage, use
 `--appimage-extract-and-run` or the desktop tarball instead.
+
+To run the desktop tarball:
+
+```bash
+tar -xzf librarybridge-desktop-0.1.0-linux-x86_64.tar.gz
+./LibraryBridge.AppDir/AppRun
+```
+
+To run the command-line tool:
+
+```bash
+tar -xzf librarybridge-cli-0.1.0-linux-x86_64.tar.gz
+./librarybridge
+```
+
+### Arch-based distributions
+
+An Arch `PKGBUILD` is included in the repository, but an AUR package is not
+published yet.
+
+Until the AUR package is available, use the Linux downloads above or build
+from source.
+
+### Build from source
 
 ```bash
 git clone https://github.com/amcdev7/LibraryBridge.git
