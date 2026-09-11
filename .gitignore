@@ -27,6 +27,8 @@ Desktop.ini
 # Unpublished design concepts
 /assets/branding/concepts/
 
+# Local documentation and review material
+
 # Python bytecode
 __pycache__/
 *.pyc
