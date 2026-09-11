@@ -18,6 +18,7 @@ struct Fixture {
     steam: PathBuf,
     library: PathBuf,
     home: PathBuf,
+    by_env: Option<PathBuf>,
 }
 
 impl Fixture {
@@ -34,6 +35,18 @@ impl Fixture {
         fs::create_dir_all(steam.join("steamapps")).unwrap();
         fs::create_dir_all(library.join("steamapps")).unwrap();
         fs::create_dir_all(&home).unwrap();
+
+        // CI mounts a separate filesystem under this path so the destination
+        // of a repair is genuinely a different filesystem from the fixture's
+        // library, which the real tool requires and enforces (commit
+        // 3de7f0c's same-filesystem guard). Leave it unset for a host where
+        // the default data home already resolves to another volume. Each
+        // fixture gets its own directory so parallel tests stay isolated.
+        let by_env = std::env::var_os("LIBRARYBRIDGE_TEST_DATA_DIR").map(|base| {
+            let dir = PathBuf::from(base).join(format!("test-{}-{name}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            dir
+        });
 
         fs::write(
             steam.join("steamapps/libraryfolders.vdf"),
@@ -58,6 +71,7 @@ impl Fixture {
             steam,
             library,
             home,
+            by_env,
         }
     }
 
@@ -116,6 +130,16 @@ impl Fixture {
         self.library.join("steamapps/compatdata")
     }
 
+    /// Where LibraryBridge will keep its own files and the moved data. Matches
+    /// `state::app_data_dir` / `native_data_root` in the tool: XDG_DATA_HOME
+    /// when set, else HOME/.local/share.
+    fn data_home(&self) -> PathBuf {
+        match &self.by_env {
+            Some(dir) => dir.join("librarybridge"),
+            None => self.home.join(".local/share/librarybridge"),
+        }
+    }
+
     fn save_file(&self, root: &Path) -> PathBuf {
         root.join(format!(
             "{APPID}/pfx/drive_c/users/steamuser/Saved Games/save.dat"
@@ -138,24 +162,30 @@ impl Fixture {
         } else {
             format!("{}:/usr/bin:/bin", bin.display())
         };
-        Command::new(BIN)
-            .args(["--steam-root", self.steam.to_str().unwrap()])
+        let mut cmd = Command::new(BIN);
+        cmd.args(["--steam-root", self.steam.to_str().unwrap()])
             .args(args)
             .env("HOME", &self.home)
-            .env("PATH", path)
-            .env_remove("XDG_DATA_HOME")
-            .output()
-            .expect("failed to run librarybridge")
+            .env("PATH", path);
+        if let Some(dir) = &self.by_env {
+            cmd.env("XDG_DATA_HOME", dir);
+        } else {
+            cmd.env_remove("XDG_DATA_HOME");
+        }
+        cmd.output().expect("failed to run librarybridge")
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(BIN)
-            .args(["--steam-root", self.steam.to_str().unwrap()])
+        let mut cmd = Command::new(BIN);
+        cmd.args(["--steam-root", self.steam.to_str().unwrap()])
             .args(args)
-            .env("HOME", &self.home)
-            .env_remove("XDG_DATA_HOME")
-            .output()
-            .expect("failed to run librarybridge")
+            .env("HOME", &self.home);
+        if let Some(dir) = &self.by_env {
+            cmd.env("XDG_DATA_HOME", dir);
+        } else {
+            cmd.env_remove("XDG_DATA_HOME");
+        }
+        cmd.output().expect("failed to run librarybridge")
     }
 
     fn run_ok(&self, args: &[&str]) -> String {
@@ -245,7 +275,7 @@ fn dry_run_changes_nothing() {
         .unwrap()
         .file_type()
         .is_symlink());
-    assert!(!fixture.home.join(".local/share/librarybridge").exists());
+    assert!(!fixture.data_home().exists());
 }
 
 #[test]
@@ -660,7 +690,7 @@ fn a_dry_run_writes_nothing_at_all() {
         !listing_after.iter().any(|name| name.contains("probe")),
         "a probe file was left behind: {listing_after:?}"
     );
-    assert!(!fixture.home.join(".local/share/librarybridge").exists());
+    assert!(!fixture.data_home().exists());
 }
 
 /// R13. A directory sitting at the staging name is not proof that this run
@@ -672,7 +702,7 @@ fn data_at_the_staging_path_is_never_deleted() {
     let id = fixture.library_id();
 
     // Someone else's data, at the name an interrupted copy would use.
-    let root = fixture.home.join(".local/share/librarybridge");
+    let root = fixture.data_home();
     let library_dir = root.join(format!("Games-{id}"));
     let squatter = library_dir.join("compatdata.incomplete");
     fs::create_dir_all(&squatter).unwrap();
@@ -698,8 +728,13 @@ fn data_at_the_staging_path_is_never_deleted() {
 
 /// R20. A filesystem the tool cannot identify is a blocking state, not a
 /// shrug. This is every non-Linux host, which is why the other tests pass
-/// --force.
+/// --force. On Linux the mount table is always readable, so the state the
+/// test exercises does not exist there.
 #[test]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "exercises the off-Linux unidentified-filesystem state"
+)]
 fn an_unidentified_filesystem_blocks_repair() {
     let fixture = Fixture::new("unknownfs");
     fixture.make_prefix();
@@ -727,9 +762,7 @@ fn equal_sized_but_different_data_is_still_a_conflict() {
 
     // A destination whose shape matches the source exactly, byte for byte in
     // total, but whose contents differ.
-    let target = fixture
-        .home
-        .join(format!(".local/share/librarybridge/Games-{id}/compatdata"));
+    let target = fixture.data_home().join(format!("Games-{id}/compatdata"));
     copy_tree(&fixture.compatdata(), &target);
     let save = fixture.save_file(&target);
     let original = fs::read(&save).unwrap();
@@ -804,7 +837,7 @@ fn a_locked_library_refuses_a_second_operation() {
     fixture.make_prefix();
     let id = fixture.library_id();
 
-    let locks = fixture.home.join(".local/share/librarybridge/locks");
+    let locks = fixture.data_home().join("locks");
     fs::create_dir_all(&locks).unwrap();
     fs::write(
         locks.join(format!("{id}.lock")),
@@ -832,7 +865,15 @@ fn a_locked_library_refuses_a_second_operation() {
 
 /// R14. Recovery used to skip the preconditions a normal repair runs, so an
 /// interrupted repair could be finished while Steam was running.
+///
+/// The fake-`ps` mechanism only steers the non-Linux process check; on Linux
+/// the tool reads /proc/*/comm directly, so the refusal is exercised live by
+/// the same code path and cannot be steered by a PATH stub.
 #[test]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "on Linux the running check reads /proc, not ps"
+)]
 fn recovery_refuses_while_steam_is_running() {
     let fixture = Fixture::new("recoverysteam");
     fixture.make_prefix();
@@ -850,6 +891,10 @@ fn recovery_refuses_while_steam_is_running() {
 /// R25. An empty process list used to mean both "nothing is running" and
 /// "nothing could be seen". Only the first is safe to act on.
 #[test]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "on Linux the running check reads /proc, not ps"
+)]
 fn an_unanswerable_process_check_blocks_the_repair() {
     let fixture = Fixture::new("noprocinfo");
     fixture.make_prefix();
@@ -990,7 +1035,7 @@ fn recovery_without_evidence_stops() {
     let backup = fixture.backup_dir();
     fs::remove_dir_all(&backup).unwrap();
     fs::write(&backup, b"not a directory").unwrap();
-    let _ = fs::remove_dir_all(fixture.home.join(".local/share/librarybridge/operations"));
+    let _ = fs::remove_dir_all(fixture.data_home().join("operations"));
 
     let output = fixture.run(&["fix", &id, "--yes", "--force"]);
     assert!(!output.status.success());
@@ -1031,7 +1076,7 @@ fn a_completed_repair_leaves_no_operation_record() {
     let id = fixture.library_id();
     fixture.run_ok(&["fix", &id, "--yes", "--force"]);
 
-    let records = fixture.home.join(".local/share/librarybridge/operations");
+    let records = fixture.data_home().join("operations");
     let left = fs::read_dir(&records)
         .map(|d| d.flatten().count())
         .unwrap_or(0);

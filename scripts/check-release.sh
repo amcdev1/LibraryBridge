@@ -10,8 +10,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="$VERSION"
-[ -n "${VERSION:-}" ] || VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+VERSION="${VERSION:-}"
+[ -n "$VERSION" ] || VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 REQUIRE_APPIMAGE=0
 case "${1:-}" in
   --require-appimage) REQUIRE_APPIMAGE=1 ;;

@@ -32,7 +32,16 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --locked --workspace
+        run: |
+          set -euo pipefail
+          # The end-to-end suite refuses to repair a library whose destination
+          # sits on the same filesystem, which is correct behaviour for the
+          # real tool. Put the fixture destination on its own filesystem so
+          # the tests exercise a genuine cross-filesystem repair (they mount
+          # is available and the runner is disposable).
+          sudo mkdir -p /mnt/lbtest
+          sudo mount -t tmpfs -o size=4G,mode=0777 tmpfs /mnt/lbtest
+          LIBRARYBRIDGE_TEST_DATA_DIR=/mnt/lbtest cargo test --locked --workspace
 
       - name: Build (debug, all targets)
         run: cargo build --locked --workspace --all-targets
