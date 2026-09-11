@@ -72,7 +72,7 @@ CLI_STAGE="dist/_stage-cli"
 mkdir -p "$CLI_STAGE"
 install -m0755 target/release/librarybridge "$CLI_STAGE/librarybridge"
 install -m0644 LICENSE "$CLI_STAGE/LICENSE"
-install -m0644 packaging/recovery-guide.txt "$CLI_STAGE/RECOVERY.txt"
+install -m0644 docs/recovery-guide.txt "$CLI_STAGE/RECOVERY.txt"
 install -m0644 dist/THIRD_PARTY_NOTICES.txt "$CLI_STAGE/THIRD_PARTY_NOTICES.txt"
 printf '%s\n' 'See RECOVERY.txt for how to recover a library without this tool.' > "$CLI_STAGE/README.txt"
 tar -C "$CLI_STAGE" -czf "dist/librarybridge-cli-$VERSION-linux-$ARCH.tar.gz" .

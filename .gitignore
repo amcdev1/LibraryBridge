@@ -24,7 +24,7 @@ Desktop.ini
 # macOS directory metadata, not project content
 .DS_Store
 
-# Internal planning, release, review, and design material (kept locally)
+# Unpublished design concepts
 /assets/branding/concepts/
 
 # Python bytecode
