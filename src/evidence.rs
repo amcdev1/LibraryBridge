@@ -91,7 +91,9 @@ pub fn describe(field: &str) -> &'static str {
 }
 
 fn path_for(library_id: &str) -> PathBuf {
-    app_data_dir().join("evidence").join(format!("{library_id}.json"))
+    app_data_dir()
+        .join("evidence")
+        .join(format!("{library_id}.json"))
 }
 
 fn now() -> u64 {
@@ -122,7 +124,10 @@ impl Evidence {
                     Some(Json::Number(n)) => *n as u64,
                     _ => 0,
                 },
-                by_tool: value.get("by_tool").and_then(Json::as_bool).unwrap_or(false),
+                by_tool: value
+                    .get("by_tool")
+                    .and_then(Json::as_bool)
+                    .unwrap_or(false),
             }
         };
         Evidence {

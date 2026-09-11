@@ -1585,11 +1585,7 @@ impl App {
 
             let mut choice = self.theme;
             ui.horizontal_wrapped(|ui| {
-                for option in [
-                    ThemeChoice::System,
-                    ThemeChoice::Light,
-                    ThemeChoice::Dark,
-                ] {
+                for option in [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark] {
                     ui.radio_value(&mut choice, option, option.label());
                 }
             });
@@ -2455,10 +2451,7 @@ impl App {
                 }
                 for warning in &candidate.launch_warnings {
                     ui.add_space(4.0);
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        format!("Watch for: {warning}"),
-                    );
+                    ui.colored_label(ui.visuals().warn_fg_color, format!("Watch for: {warning}"));
                 }
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("Why this one:").weak());

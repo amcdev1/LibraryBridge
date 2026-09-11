@@ -408,7 +408,10 @@ fn forget_refuses_anything_that_is_not_a_record_name() {
         assert!(!output.status.success(), "accepted {argument:?}");
     }
     assert!(unrelated.is_file(), "an unrelated file was deleted");
-    assert_eq!(fs::read_to_string(&unrelated).unwrap(), r#"{"personal":"data"}"#);
+    assert_eq!(
+        fs::read_to_string(&unrelated).unwrap(),
+        r#"{"personal":"data"}"#
+    );
 }
 
 /// R16. A file with the right name in the right place still has to look like
@@ -416,7 +419,9 @@ fn forget_refuses_anything_that_is_not_a_record_name() {
 #[test]
 fn forget_refuses_a_file_that_is_not_one_of_our_records() {
     let fixture = Fixture::new("forgetalien");
-    let imports = fixture.home.join(".local/share/librarybridge/lutris/imports");
+    let imports = fixture
+        .home
+        .join(".local/share/librarybridge/lutris/imports");
     fs::create_dir_all(&imports).unwrap();
     let planted = imports.join("something.json");
     fs::write(&planted, r#"{"unrelated":true}"#).unwrap();
@@ -424,7 +429,10 @@ fn forget_refuses_a_file_that_is_not_one_of_our_records() {
     let output = fixture.run(&["lutris", "forget", "--entry", "something"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not a LibraryBridge import record"), "{stderr}");
+    assert!(
+        stderr.contains("not a LibraryBridge import record"),
+        "{stderr}"
+    );
     assert!(planted.is_file());
 }
 
@@ -448,15 +456,28 @@ fn lutris_import_honours_dry_run() {
     )
     .unwrap();
 
-    let output = fixture.run(&["lutris", "import", "--plan", plan.to_str().unwrap(), "--dry-run"]);
+    let output = fixture.run(&[
+        "lutris",
+        "import",
+        "--plan",
+        plan.to_str().unwrap(),
+        "--dry-run",
+    ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(stdout.contains("Dry run"), "{stdout}");
     assert!(stdout.contains("Nothing was changed"), "{stdout}");
     assert!(stdout.contains("add   Some Game"), "{stdout}");
 
     let state = fixture.home.join(".local/share/librarybridge/lutris");
-    assert!(!state.join("definitions").exists(), "a definition was written");
+    assert!(
+        !state.join("definitions").exists(),
+        "a definition was written"
+    );
     assert!(!state.join("imports").exists(), "a record was written");
 }
 
@@ -476,8 +497,14 @@ fn scanning_does_not_follow_a_symlink_child_of_the_root() {
 
     let text = fixture.scan();
     assert!(text.contains("Inside Game"), "{text}");
-    assert!(!text.contains("RealGame.exe"), "the scan left the chosen folder:\n{text}");
-    assert!(!text.contains("LinkedGame"), "the scan followed a link out of the folder:\n{text}");
+    assert!(
+        !text.contains("RealGame.exe"),
+        "the scan left the chosen folder:\n{text}"
+    );
+    assert!(
+        !text.contains("LinkedGame"),
+        "the scan followed a link out of the folder:\n{text}"
+    );
 }
 
 /// R26. Detection and eligibility are different questions. A Steam game is
@@ -549,7 +576,13 @@ fn a_hand_written_steam_row_is_refused_at_import() {
     )
     .unwrap();
 
-    let output = fixture.run(&["lutris", "import", "--plan", plan.to_str().unwrap(), "--dry-run"]);
+    let output = fixture.run(&[
+        "lutris",
+        "import",
+        "--plan",
+        plan.to_str().unwrap(),
+        "--dry-run",
+    ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("skip  Half-Life 2"), "{stdout}");
     assert!(stdout.contains("duplicate"), "{stdout}");
@@ -573,7 +606,10 @@ fn candidate_json_carries_alternatives_and_warnings() {
     ]);
     let json = String::from_utf8_lossy(&output.stdout);
     assert!(json.contains("\"alternatives\": ["), "{json}");
-    assert!(json.contains("alpha.exe") || json.contains("beta.exe"), "{json}");
+    assert!(
+        json.contains("alpha.exe") || json.contains("beta.exe"),
+        "{json}"
+    );
     assert!(json.contains("\"filesystem_warning\":"), "{json}");
     assert!(json.contains("\"eligible\": true"), "{json}");
 }
@@ -601,7 +637,11 @@ fn lutris_plan_honours_dry_run() {
         output_path.to_str().unwrap(),
         "--dry-run",
     ]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Dry run"), "{stdout}");
     assert!(stdout.contains("Nothing was written"), "{stdout}");
@@ -616,7 +656,11 @@ fn scan_json_reports_what_it_could_not_read() {
     let steam = fixture.root.join("Steam");
     fs::create_dir_all(steam.join("steamapps")).unwrap();
     // Metadata that cannot be parsed.
-    fs::write(steam.join("steamapps/libraryfolders.vdf"), "\"libraryfolders\" {").unwrap();
+    fs::write(
+        steam.join("steamapps/libraryfolders.vdf"),
+        "\"libraryfolders\" {",
+    )
+    .unwrap();
 
     let output = fixture.run(&["--steam-root", steam.to_str().unwrap(), "scan", "--json"]);
     let json = String::from_utf8_lossy(&output.stdout);

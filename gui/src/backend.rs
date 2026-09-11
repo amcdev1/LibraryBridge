@@ -151,7 +151,9 @@ pub fn libraries(data_dir: &str) -> Result<Scan, String> {
                 "this window reads version {SCHEMA} of the command line tool's output, and \
                  {} reports version {}. They are from different builds; install them together.",
                 binary().display(),
-                other.map(|v| v.to_string()).unwrap_or_else(|| "an unknown".to_string())
+                other
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "an unknown".to_string())
             ))
         }
     }
@@ -164,7 +166,12 @@ pub fn libraries(data_dir: &str) -> Result<Scan, String> {
     let warnings = parsed
         .get("warnings")
         .and_then(Value::as_array)
-        .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
 
     let libraries = rows
@@ -181,7 +188,10 @@ pub fn libraries(data_dir: &str) -> Result<Scan, String> {
                 .get("connected")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-            eligible: row.get("eligible").and_then(Value::as_bool).unwrap_or(false),
+            eligible: row
+                .get("eligible")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             blocking_reason: text(row, "blocking_reason"),
             destination_occupied: text(row, "destination_occupied"),
             backups: row
@@ -275,8 +285,13 @@ fn parse_event(line: &str) -> Option<Phase> {
             done: count("done"),
             total: count("total"),
         },
-        "copying" => Phase::Copying { total_bytes: count("total_bytes") },
-        "progress" => Phase::Progress { files: count("files"), bytes: count("bytes") },
+        "copying" => Phase::Copying {
+            total_bytes: count("total_bytes"),
+        },
+        "progress" => Phase::Progress {
+            files: count("files"),
+            bytes: count("bytes"),
+        },
         "verifying" => Phase::Verifying,
         "committing" => Phase::Committing,
         "applied" => Phase::Applied,
@@ -314,12 +329,7 @@ where
 
 /// Run a command, sending each line of output as it appears so the window can
 /// show progress rather than freezing until the copy finishes.
-pub fn stream(
-    sender: &Sender<Update>,
-    arguments: &[String],
-    running: &Running,
-    data_dir: &str,
-) {
+pub fn stream(sender: &Sender<Update>, arguments: &[String], running: &Running, data_dir: &str) {
     let mut full = data_dir_args(data_dir);
     full.extend(arguments.iter().cloned());
     let mut child = match Command::new(binary())
@@ -544,7 +554,12 @@ fn strings(value: &Value, key: &str) -> Vec<String> {
     value
         .get(key)
         .and_then(Value::as_array)
-        .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 

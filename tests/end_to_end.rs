@@ -526,19 +526,27 @@ fn a_competing_writer_after_an_interrupted_repair_is_a_conflict() {
     // Crash between moving the original aside and creating the link.
     fs::remove_file(fixture.compatdata()).unwrap();
     // Steam gets there first and makes its own.
-    let fresh = fixture.compatdata().join(format!("{APPID}/pfx/drive_c/users/steamuser/Saved Games"));
+    let fresh = fixture
+        .compatdata()
+        .join(format!("{APPID}/pfx/drive_c/users/steamuser/Saved Games"));
     fs::create_dir_all(&fresh).unwrap();
     fs::write(fresh.join("save.dat"), b"EMPTY NEW PREFIX").unwrap();
 
     let output = fixture.run(&["fix", &id, "--yes", "--force"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("only you can say which one counts"), "{stderr}");
+    assert!(
+        stderr.contains("only you can say which one counts"),
+        "{stderr}"
+    );
     assert!(stderr.contains("--keep-destination"), "{stderr}");
     assert!(stderr.contains("--replace-destination"), "{stderr}");
 
     // Refusing changed nothing.
-    assert_eq!(fs::read(fixture.save_file(&fixture.compatdata())).unwrap(), b"EMPTY NEW PREFIX");
+    assert_eq!(
+        fs::read(fixture.save_file(&fixture.compatdata())).unwrap(),
+        b"EMPTY NEW PREFIX"
+    );
 }
 
 #[test]
@@ -550,7 +558,9 @@ fn keeping_the_destination_restores_the_migrated_saves() {
     let target = fs::read_link(fixture.compatdata()).unwrap();
 
     fs::remove_file(fixture.compatdata()).unwrap();
-    let fresh = fixture.compatdata().join(format!("{APPID}/pfx/drive_c/users/steamuser/Saved Games"));
+    let fresh = fixture
+        .compatdata()
+        .join(format!("{APPID}/pfx/drive_c/users/steamuser/Saved Games"));
     fs::create_dir_all(&fresh).unwrap();
     fs::write(fresh.join("save.dat"), b"EMPTY NEW PREFIX").unwrap();
 
@@ -558,8 +568,14 @@ fn keeping_the_destination_restores_the_migrated_saves() {
     assert!(text.contains("Done."), "{text}");
 
     // Steam reads the migrated prefixes again.
-    assert!(fs::symlink_metadata(fixture.compatdata()).unwrap().file_type().is_symlink());
-    assert_eq!(fs::read(fixture.save_file(&fixture.compatdata())).unwrap(), b"OLD SAVE");
+    assert!(fs::symlink_metadata(fixture.compatdata())
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        fs::read(fixture.save_file(&fixture.compatdata())).unwrap(),
+        b"OLD SAVE"
+    );
     assert_eq!(fs::read(fixture.save_file(&target)).unwrap(), b"OLD SAVE");
 
     // And what Steam had made is kept, not discarded.
@@ -586,14 +602,22 @@ fn replacing_the_destination_keeps_the_old_one_too() {
     fixture.run_ok(&["fix", &id, "--yes", "--force"]);
 
     fs::remove_file(fixture.compatdata()).unwrap();
-    let fresh = fixture.compatdata().join(format!("{APPID}/pfx/drive_c/users/steamuser/Saved Games"));
+    let fresh = fixture
+        .compatdata()
+        .join(format!("{APPID}/pfx/drive_c/users/steamuser/Saved Games"));
     fs::create_dir_all(&fresh).unwrap();
     fs::write(fresh.join("save.dat"), b"EMPTY NEW PREFIX").unwrap();
 
     let text = fixture.run_ok(&["fix", &id, "--yes", "--force", "--replace-destination"]);
-    assert!(text.contains("Set aside a copy from an earlier repair"), "{text}");
+    assert!(
+        text.contains("Set aside a copy from an earlier repair"),
+        "{text}"
+    );
     let target = fs::read_link(fixture.compatdata()).unwrap();
-    assert_eq!(fs::read(fixture.save_file(&target)).unwrap(), b"EMPTY NEW PREFIX");
+    assert_eq!(
+        fs::read(fixture.save_file(&target)).unwrap(),
+        b"EMPTY NEW PREFIX"
+    );
 
     // The migrated prefixes are still there under compatdata.previous.
     let previous = target.with_file_name("compatdata.previous");
@@ -662,8 +686,14 @@ fn data_at_the_staging_path_is_never_deleted() {
         "the repair deleted data it did not create"
     );
     // And the repair still worked.
-    assert!(fs::symlink_metadata(fixture.compatdata()).unwrap().file_type().is_symlink());
-    assert_eq!(fs::read(fixture.save_file(&fixture.compatdata())).unwrap(), b"OLD SAVE");
+    assert!(fs::symlink_metadata(fixture.compatdata())
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        fs::read(fixture.save_file(&fixture.compatdata())).unwrap(),
+        b"OLD SAVE"
+    );
 }
 
 /// R20. A filesystem the tool cannot identify is a blocking state, not a
@@ -680,7 +710,10 @@ fn an_unidentified_filesystem_blocks_repair() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("could not be identified"), "{stderr}");
     assert!(fixture.compatdata().is_dir());
-    assert!(!fs::symlink_metadata(fixture.compatdata()).unwrap().file_type().is_symlink());
+    assert!(!fs::symlink_metadata(fixture.compatdata())
+        .unwrap()
+        .file_type()
+        .is_symlink());
 }
 
 /// R02. Two trees can have the same file count and the same total bytes and
@@ -694,7 +727,9 @@ fn equal_sized_but_different_data_is_still_a_conflict() {
 
     // A destination whose shape matches the source exactly, byte for byte in
     // total, but whose contents differ.
-    let target = fixture.home.join(format!(".local/share/librarybridge/Games-{id}/compatdata"));
+    let target = fixture
+        .home
+        .join(format!(".local/share/librarybridge/Games-{id}/compatdata"));
     copy_tree(&fixture.compatdata(), &target);
     let save = fixture.save_file(&target);
     let original = fs::read(&save).unwrap();
@@ -705,11 +740,17 @@ fn equal_sized_but_different_data_is_still_a_conflict() {
     let output = fixture.run(&["fix", &id, "--yes", "--force"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("only you can say which one counts"), "{stderr}");
+    assert!(
+        stderr.contains("only you can say which one counts"),
+        "{stderr}"
+    );
 
     // Untouched on both sides.
     assert_eq!(fs::read(&save).unwrap(), replacement);
-    assert_eq!(fs::read(fixture.save_file(&fixture.compatdata())).unwrap(), original);
+    assert_eq!(
+        fs::read(fixture.save_file(&fixture.compatdata())).unwrap(),
+        original
+    );
 }
 
 /// R24. Renaming a library in Steam changes its display name. Identity is the
@@ -731,7 +772,10 @@ fn renaming_a_library_in_steam_does_not_orphan_its_repair() {
     let new_id = fixture.library_id();
     let text = fixture.run_ok(&["undo", &new_id, "--yes"]);
     assert!(text.contains("Done."), "{text}");
-    assert_eq!(fs::read(fixture.save_file(&fixture.compatdata())).unwrap(), b"OLD SAVE");
+    assert_eq!(
+        fs::read(fixture.save_file(&fixture.compatdata())).unwrap(),
+        b"OLD SAVE"
+    );
 }
 
 /// A plain recursive copy for test setup only. Not the tool's copier.
@@ -771,12 +815,19 @@ fn a_locked_library_refuses_a_second_operation() {
     let output = fixture.run(&["fix", &id, "--yes", "--force"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("another LibraryBridge operation"), "{stderr}");
+    assert!(
+        stderr.contains("another LibraryBridge operation"),
+        "{stderr}"
+    );
     assert!(fixture.compatdata().is_dir());
 
     // A dry run needs no lock, because it changes nothing.
     let output = fixture.run(&["fix", &id, "--dry-run", "--force"]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// R14. Recovery used to skip the preconditions a normal repair runs, so an
@@ -839,7 +890,9 @@ fn a_relative_link_pointing_outside_the_prefix_blocks_the_repair() {
     fs::write(fixture.library.join("steamapps/external-save.dat"), b"SAVE").unwrap();
     symlink(
         "../../../external-save.dat",
-        fixture.compatdata().join(format!("{APPID}/pfx/relative-save")),
+        fixture
+            .compatdata()
+            .join(format!("{APPID}/pfx/relative-save")),
     )
     .unwrap();
 
@@ -877,7 +930,9 @@ fn a_stale_plan_is_refused() {
 
     // The library changes underneath it.
     fs::write(
-        fixture.compatdata().join(format!("{APPID}/pfx/new-file.dat")),
+        fixture
+            .compatdata()
+            .join(format!("{APPID}/pfx/new-file.dat")),
         b"appeared later",
     )
     .unwrap();
@@ -885,8 +940,14 @@ fn a_stale_plan_is_refused() {
     let output = fixture.run(&["fix", &id, "--yes", "--force", "--expect", &plan]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("changed since the plan was reviewed"), "{stderr}");
-    assert!(!fs::symlink_metadata(fixture.compatdata()).unwrap().file_type().is_symlink());
+    assert!(
+        stderr.contains("changed since the plan was reviewed"),
+        "{stderr}"
+    );
+    assert!(!fs::symlink_metadata(fixture.compatdata())
+        .unwrap()
+        .file_type()
+        .is_symlink());
 }
 
 /// R14. Recovery must show the copy is complete before pointing Steam at it.
@@ -954,7 +1015,10 @@ fn a_destination_with_no_original_beside_it_is_a_conflict() {
     let output = fixture.run(&["fix", &id, "--yes", "--force"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("only you can say which one counts"), "{stderr}");
+    assert!(
+        stderr.contains("only you can say which one counts"),
+        "{stderr}"
+    );
     assert!(stderr.contains("nothing there"), "{stderr}");
 }
 
@@ -971,7 +1035,10 @@ fn a_completed_repair_leaves_no_operation_record() {
     let left = fs::read_dir(&records)
         .map(|d| d.flatten().count())
         .unwrap_or(0);
-    assert_eq!(left, 0, "a completed repair left an operation record behind");
+    assert_eq!(
+        left, 0,
+        "a completed repair left an operation record behind"
+    );
 }
 
 /// Two contradictory answers to the same question is a usage error, not a
@@ -1013,7 +1080,10 @@ fn an_interrupted_copy_back_is_reported() {
     fs::write(leftover.join("220/partial.dat"), b"half a copy").unwrap();
 
     let text = fixture.run_ok(&["scan"]);
-    assert!(text.contains("copy back to this drive stopped part way"), "{text}");
+    assert!(
+        text.contains("copy back to this drive stopped part way"),
+        "{text}"
+    );
     assert!(text.contains("compatdata.restoring"), "{text}");
 
     // And it is still there afterwards.
@@ -1045,8 +1115,14 @@ fn undo_refuses_a_relative_link_that_would_change_meaning() {
     assert!(stderr.contains("points-outside"), "{stderr}");
 
     // The repair is untouched and the data is still reachable.
-    assert!(fs::symlink_metadata(fixture.compatdata()).unwrap().file_type().is_symlink());
-    assert_eq!(fs::read(fixture.save_file(&fixture.compatdata())).unwrap(), b"OLD SAVE");
+    assert!(fs::symlink_metadata(fixture.compatdata())
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        fs::read(fixture.save_file(&fixture.compatdata())).unwrap(),
+        b"OLD SAVE"
+    );
 }
 
 /// Two names for one file must still be two names for one file afterwards,
@@ -1097,7 +1173,10 @@ fn hard_links_and_timestamps_survive_the_copy() {
         .modified()
         .unwrap();
     assert_eq!(
-        fs::metadata(target.join(APPID)).unwrap().modified().unwrap(),
+        fs::metadata(target.join(APPID))
+            .unwrap()
+            .modified()
+            .unwrap(),
         source_dir_mtime
     );
 }
@@ -1318,11 +1397,17 @@ fn backup_delete_after_newer_writes() {
 
     let live = fs::read_link(fixture.compatdata()).unwrap();
     // A brand new save, only in the moved copy.
-    fs::write(live.join(format!("{APPID}/pfx/drive_c/post-repair.dat")), b"NEW SAVE")
-        .unwrap();
+    fs::write(
+        live.join(format!("{APPID}/pfx/drive_c/post-repair.dat")),
+        b"NEW SAVE",
+    )
+    .unwrap();
     // An existing file rewritten in place, as a game update would.
-    fs::write(live.join(format!("{APPID}/pfx/system.reg")), b"WINE REGISTRY\nEXTRA\n")
-        .unwrap();
+    fs::write(
+        live.join(format!("{APPID}/pfx/system.reg")),
+        b"WINE REGISTRY\nEXTRA\n",
+    )
+    .unwrap();
 
     let backup = fixture.backup_dir();
     let text = fixture.run_ok(&["backup", &id, "--dry-run"]);

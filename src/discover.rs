@@ -273,7 +273,10 @@ fn launch_warnings(candidate: &Candidate) -> Vec<String> {
     // Lutris's "Enable D3D Extras" option marks the whole d3dcompiler/d3dx
     // family as native-only by default, which makes Wine skip the bundled copy
     // and the game die with "DLL not found" (c0000135) before a window opens.
-    if names.iter().any(|name| name.starts_with("d3dcompiler_") && name.ends_with(".dll")) {
+    if names
+        .iter()
+        .any(|name| name.starts_with("d3dcompiler_") && name.ends_with(".dll"))
+    {
         warnings.push(
             "This game ships its own d3dcompiler DLL. Lutris's default \"Enable D3D Extras\" \
              option loads that family as native-only, so Wine skips the bundled copy and the \
@@ -749,8 +752,14 @@ mod tests {
             ..base_candidate()
         };
         let warnings = launch_warnings(&candidate);
-        assert!(warnings.iter().any(|w| w.contains("lsteamclient")), "{warnings:?}");
-        assert!(warnings.iter().any(|w| w.contains("ISteamUser")), "{warnings:?}");
+        assert!(
+            warnings.iter().any(|w| w.contains("lsteamclient")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("ISteamUser")),
+            "{warnings:?}"
+        );
         assert!(
             warnings
                 .iter()

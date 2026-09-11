@@ -75,7 +75,12 @@ impl Manifest {
     fn push(&mut self, entry: Entry) {
         match &entry.kind {
             Kind::Dir => self.dirs += 1,
-            Kind::File { size, links, allocated, .. } => {
+            Kind::File {
+                size,
+                links,
+                allocated,
+                ..
+            } => {
                 self.files += 1;
                 self.bytes += size;
                 if *links > 1 {
@@ -213,7 +218,15 @@ pub fn copy_tree(
 
     let mut manifest = Manifest::default();
     let mut links: HashMap<(u64, u64), (PathBuf, [u8; 32])> = HashMap::new();
-    copy_dir(src, dst, Path::new(""), 0, &mut manifest, &mut links, progress)?;
+    copy_dir(
+        src,
+        dst,
+        Path::new(""),
+        0,
+        &mut manifest,
+        &mut links,
+        progress,
+    )?;
     manifest.entries.sort_by(|a, b| a.rel.cmp(&b.rel));
     Ok(manifest)
 }
@@ -284,9 +297,8 @@ fn copy_dir(
             let digest = if meta.nlink() > 1 {
                 match links.get(&identity) {
                     Some((first, digest)) => {
-                        fs::hard_link(first, &to).map_err(|e| {
-                            format!("{} -> {}: {e}", first.display(), to.display())
-                        })?;
+                        fs::hard_link(first, &to)
+                            .map_err(|e| format!("{} -> {}: {e}", first.display(), to.display()))?;
                         *digest
                     }
                     None => {
@@ -337,9 +349,15 @@ fn copy_times(from: &Path, to: &Path) -> Result<(), String> {
                 tv_nsec: since.subsec_nanos() as _,
             },
             // Before 1970. Rare, and not worth failing a repair over.
-            Err(_) => rustix::fs::Timespec { tv_sec: 0, tv_nsec: 0 },
+            Err(_) => rustix::fs::Timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            },
         },
-        Err(_) => rustix::fs::Timespec { tv_sec: 0, tv_nsec: 0 },
+        Err(_) => rustix::fs::Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        },
     };
 
     let times = Timestamps {
@@ -494,7 +512,10 @@ fn compare_link_groups(expected: &Manifest, actual: &Manifest) -> Vec<String> {
     fn groups(manifest: &Manifest) -> Vec<Vec<&Path>> {
         let mut by_file: HashMap<(u64, u64), Vec<&Path>> = HashMap::new();
         for entry in &manifest.entries {
-            if let Kind::File { identity, links, .. } = &entry.kind {
+            if let Kind::File {
+                identity, links, ..
+            } = &entry.kind
+            {
                 if *links > 1 {
                     by_file.entry(*identity).or_default().push(&entry.rel);
                 }
@@ -768,7 +789,10 @@ pub fn probe_symlink_support(dir: &Path) -> Result<(), String> {
     })();
 
     // Remove it only if it is still the link this function made.
-    if fs::read_link(&probe).map(|text| text == sentinel).unwrap_or(false) {
+    if fs::read_link(&probe)
+        .map(|text| text == sentinel)
+        .unwrap_or(false)
+    {
         let _ = fs::remove_file(&probe);
     }
     result

@@ -107,7 +107,11 @@ impl Library {
     /// Is this path a destination belonging to this library? Identity is the
     /// id, never the readable half of the directory name.
     pub fn owns(&self, path: &Path) -> bool {
-        if path.file_name().map(|name| name != "compatdata").unwrap_or(true) {
+        if path
+            .file_name()
+            .map(|name| name != "compatdata")
+            .unwrap_or(true)
+        {
             return false;
         }
         let Some(parent) = path.parent() else {
@@ -134,10 +138,7 @@ impl Library {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or(0);
-        parent.join(format!(
-            "{STAGING_PREFIX}-{}-{stamp}",
-            std::process::id()
-        ))
+        parent.join(format!("{STAGING_PREFIX}-{}-{stamp}", std::process::id()))
     }
 }
 

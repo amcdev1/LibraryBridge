@@ -36,7 +36,10 @@ impl Lock {
 
         // Somebody holds it, or held it and died.
         let holder = fs::read_to_string(&path).unwrap_or_default();
-        let pid: Option<u32> = holder.lines().next().and_then(|line| line.trim().parse().ok());
+        let pid: Option<u32> = holder
+            .lines()
+            .next()
+            .and_then(|line| line.trim().parse().ok());
 
         match pid.map(process_is_running) {
             Some(Some(false)) => {

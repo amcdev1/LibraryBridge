@@ -163,12 +163,10 @@ pub fn is_running(_installation: &Installation) -> bool {
         .ok()
         .filter(|output| output.status.success())
         .map(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .any(|line| {
-                    let line = line.trim();
-                    !command_line_is_self(line) && command_line_is_lutris(line)
-                })
+            String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                let line = line.trim();
+                !command_line_is_self(line) && command_line_is_lutris(line)
+            })
         })
         .unwrap_or(false)
 }
@@ -482,8 +480,12 @@ mod tests {
         // A LibraryBridge invocation that merely names `lutris` as a
         // subcommand is separated at the running-process check via
         // `command_line_is_self`, not in this classifier.
-        assert!(command_line_is_self("librarybridge lutris import --plan /tmp/plan.json"));
-        assert!(command_line_is_self("/opt/librarybridge/bin/librarybridge lutris scan --root /games"));
+        assert!(command_line_is_self(
+            "librarybridge lutris import --plan /tmp/plan.json"
+        ));
+        assert!(command_line_is_self(
+            "/opt/librarybridge/bin/librarybridge lutris scan --root /games"
+        ));
         assert!(!command_line_is_self("/usr/bin/lutris"));
         assert!(!command_line_is_self("flatpak run net.lutris.Lutris"));
     }

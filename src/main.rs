@@ -123,8 +123,8 @@ fn main() -> ExitCode {
             "--all" => options.all = true,
             "--keep-destination" => options.keep_destination = true,
             "--replace-destination" => options.replace_destination = true,
-            "--steam-root" | "--data-dir" | "--root" | "--candidate" | "--output" | "--plan" | "--entry"
-            | "--expect" | "--record" => {
+            "--steam-root" | "--data-dir" | "--root" | "--candidate" | "--output" | "--plan"
+            | "--entry" | "--expect" | "--record" => {
                 index += 1;
                 let Some(value) = arguments.get(index) else {
                     return usage_error(&format!("{argument} needs a value"));

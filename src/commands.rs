@@ -53,7 +53,8 @@ pub struct Options {
 // ---------------------------------------------------------------- scan
 
 pub fn scan(options: &Options) -> Result<i32, String> {
-    let (libraries, warnings) = steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
+    let (libraries, warnings) =
+        steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
 
     if options.json {
         print!("{}", scan_json(&libraries, &warnings));
@@ -393,16 +394,16 @@ fn number(value: u64) -> String {
 /// nothing about whether a game runs, and the two are kept apart here so a
 /// completed repair never reads as a working game.
 pub fn evidence(options: &Options, reference: &str) -> Result<i32, String> {
-    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
+    let (libraries, _) =
+        steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
     let library = steam::resolve(&libraries, reference)?;
 
     if let Some(pair) = &options.record {
         let (field, answer) = pair
             .split_once('=')
             .ok_or("--record takes field=answer, for example launch=yes")?;
-        let result = evidence::parse_result(answer).ok_or_else(|| {
-            format!("'{answer}' is not an answer. Use yes, no or na.")
-        })?;
+        let result = evidence::parse_result(answer)
+            .ok_or_else(|| format!("'{answer}' is not an answer. Use yes, no or na."))?;
         evidence::Evidence::record(&library.id, field, result, false)?;
         println!("Recorded {field}: {}", result.label());
         return Ok(0);
@@ -450,7 +451,10 @@ pub fn evidence(options: &Options, reference: &str) -> Result<i32, String> {
     }
     println!();
     println!("Record an answer with, for example:");
-    println!("    librarybridge evidence {} --record launch=yes", library.id);
+    println!(
+        "    librarybridge evidence {} --record launch=yes",
+        library.id
+    );
     Ok(0)
 }
 
@@ -463,7 +467,8 @@ pub fn evidence(options: &Options, reference: &str) -> Result<i32, String> {
 /// walking every backup on a slow external drive is not something a listing
 /// should do.
 pub fn storage(options: &Options) -> Result<i32, String> {
-    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
+    let (libraries, _) =
+        steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
     let mut rows = Vec::new();
 
     // Where the copies live. `storage` exists to say how much headroom is
@@ -571,7 +576,11 @@ pub fn storage(options: &Options) -> Result<i32, String> {
             );
         }
         for (path, bytes) in backups {
-            println!("      original    {} ({})", path.display(), human_bytes(*bytes));
+            println!(
+                "      original    {} ({})",
+                path.display(),
+                human_bytes(*bytes)
+            );
         }
         if let Some((path, bytes)) = leftover {
             println!(
@@ -608,7 +617,8 @@ pub fn storage(options: &Options) -> Result<i32, String> {
 // ---------------------------------------------------------------- fix
 
 pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
-    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
+    let (libraries, _) =
+        steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
     let library = steam::resolve(&libraries, reference)?;
 
     // Held until this function returns, so a second process cannot act on a
@@ -936,11 +946,7 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
             println!();
             println!("Copying...");
         }
-        emit(
-            options,
-            "copying",
-            &[("total_bytes", number(source_bytes))],
-        );
+        emit(options, "copying", &[("total_bytes", number(source_bytes))]);
         let mut copied_files = 0usize;
         let mut copied_bytes = 0u64;
         let json = options.json;
@@ -1075,10 +1081,12 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
             ("destination", json_string(&target.to_string_lossy())),
             (
                 "backup",
-                json_string(&state::find_backups(&library.steamapps)
-                    .first()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default()),
+                json_string(
+                    &state::find_backups(&library.steamapps)
+                        .first()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                ),
             ),
         ],
     );
@@ -1238,7 +1246,8 @@ fn link_and_check(target: &Path, link_path: &Path) -> Result<(), String> {
 /// durable as everything else: the original is removed only after the copy
 /// has been shown to carry all of it.
 pub fn backup(options: &Options, reference: &str) -> Result<i32, String> {
-    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
+    let (libraries, _) =
+        steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
     let library = steam::resolve(&libraries, reference)?;
 
     // A dry run reads no lock, exactly like every other command. Deleting is
@@ -1366,7 +1375,8 @@ pub fn backup(options: &Options, reference: &str) -> Result<i32, String> {
 // ---------------------------------------------------------------- undo
 
 pub fn undo(options: &Options, reference: &str) -> Result<i32, String> {
-    let (libraries, _) = steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
+    let (libraries, _) =
+        steam::all_libraries(options.steam_root.as_deref(), options.data_dir.as_deref());
     let library = steam::resolve(&libraries, reference)?;
     let _lock = if options.dry_run {
         None
@@ -1480,7 +1490,12 @@ pub fn undo(options: &Options, reference: &str) -> Result<i32, String> {
         return Err(format!(
             "the data changed while it was being copied back, so the repair was left in \
              place. Make sure Steam is closed and try again.\n  {}",
-            changes.iter().take(10).cloned().collect::<Vec<_>>().join("\n  ")
+            changes
+                .iter()
+                .take(10)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n  ")
         ));
     }
     println!("  every file matches");
@@ -1613,7 +1628,10 @@ fn keep_destination(
 
     println!();
     println!("Done. Steam reads the data at {}", destination.display());
-    println!("The copy that was on the game drive is at {}", backup.display());
+    println!(
+        "The copy that was on the game drive is at {}",
+        backup.display()
+    );
     Ok(0)
 }
 
@@ -1692,14 +1710,23 @@ fn plan_json(
 
     let mut out = String::from("{\n");
     out.push_str("  \"schema\": 1,\n");
-    out.push_str(&format!("  \"fingerprint\": {},\n", json_string(fingerprint)));
+    out.push_str(&format!(
+        "  \"fingerprint\": {},\n",
+        json_string(fingerprint)
+    ));
     out.push_str("  \"kind\": \"repair\",\n");
-    out.push_str(&format!("  \"library_id\": {},\n", json_string(&library.id)));
+    out.push_str(&format!(
+        "  \"library_id\": {},\n",
+        json_string(&library.id)
+    ));
     out.push_str(&format!(
         "  \"library\": {},\n",
         json_string(&library.path.to_string_lossy())
     ));
-    out.push_str(&format!("  \"state\": {},\n", json_string(report.state.code())));
+    out.push_str(&format!(
+        "  \"state\": {},\n",
+        json_string(report.state.code())
+    ));
     out.push_str(&format!(
         "  \"steam\": {},\n",
         json_string(library.install_kind.label())

@@ -143,7 +143,11 @@ fn parse_mountinfo_line(line: &str) -> Option<Mount> {
 /// can. Returns a filesystem type name the classifier understands, or nothing
 /// when the device cannot be asked.
 fn identify_fuseblk(device: &Path) -> Option<String> {
-    let output = Command::new("lsblk").args(["-no", "FSTYPE"]).arg(device).output().ok()?;
+    let output = Command::new("lsblk")
+        .args(["-no", "FSTYPE"])
+        .arg(device)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -283,8 +287,14 @@ mod tests {
 
     #[test]
     fn maps_what_lsblk_reports_for_a_fuse_device() {
-        assert_eq!(fuseblk_type_from_lsblk("ntfs\n"), Some("ntfs-3g".to_string()));
-        assert_eq!(fuseblk_type_from_lsblk("exfat\n"), Some("exfat".to_string()));
+        assert_eq!(
+            fuseblk_type_from_lsblk("ntfs\n"),
+            Some("ntfs-3g".to_string())
+        );
+        assert_eq!(
+            fuseblk_type_from_lsblk("exfat\n"),
+            Some("exfat".to_string())
+        );
         assert_eq!(fuseblk_type_from_lsblk(""), None);
         assert_eq!(fuseblk_type_from_lsblk("   \n"), None);
     }

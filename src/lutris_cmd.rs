@@ -548,7 +548,10 @@ fn import(options: &Options) -> Result<i32, String> {
             emit(
                 options,
                 "lutris_adding",
-                &[("done", processed.to_string()), ("total", total.to_string())],
+                &[
+                    ("done", processed.to_string()),
+                    ("total", total.to_string()),
+                ],
             );
         } else if processed == 0 {
             emit(options, "lutris_opening", &[]);
@@ -556,7 +559,10 @@ fn import(options: &Options) -> Result<i32, String> {
             emit(
                 options,
                 "lutris_adding",
-                &[("done", processed.to_string()), ("total", total.to_string())],
+                &[
+                    ("done", processed.to_string()),
+                    ("total", total.to_string()),
+                ],
             );
         }
         let exit = lutris::install(&installation, &yaml_path);
@@ -564,7 +570,10 @@ fn import(options: &Options) -> Result<i32, String> {
             emit(
                 options,
                 "lutris_adding",
-                &[("done", processed.to_string()), ("total", total.to_string())],
+                &[
+                    ("done", processed.to_string()),
+                    ("total", total.to_string()),
+                ],
             );
         }
         match exit {
@@ -751,7 +760,10 @@ fn forget(options: &Options) -> Result<i32, String> {
     // Belt and braces: the name is already validated, so this can only fail
     // if the records directory itself has been replaced underneath us.
     if path.parent() != Some(directory.as_path()) {
-        return Err(format!("{}: refusing to act outside the records directory", path.display()));
+        return Err(format!(
+            "{}: refusing to act outside the records directory",
+            path.display()
+        ));
     }
     // A record is a regular file this tool wrote. A symlink at that name is
     // somebody redirecting a delete, so it is refused rather than followed.

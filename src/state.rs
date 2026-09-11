@@ -28,10 +28,7 @@ pub fn new_restore_path(steamapps: &Path) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
-    steamapps.join(format!(
-        "{RESTORE_STAGING}-{}-{stamp}",
-        std::process::id()
-    ))
+    steamapps.join(format!("{RESTORE_STAGING}-{}-{stamp}", std::process::id()))
 }
 /// A destination left behind by an earlier repair that was undone.
 pub const PREVIOUS_PREFIX: &str = "compatdata.previous";

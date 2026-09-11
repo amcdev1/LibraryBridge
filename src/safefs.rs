@@ -67,14 +67,24 @@ impl Dir {
                 })
             }
             Err(error) if error == rustix::io::Errno::NOENT => Ok(Kind::Absent),
-            Err(error) => Err(format!("{}/{}: {error}", self.shown.display(), name.display())),
+            Err(error) => Err(format!(
+                "{}/{}: {error}",
+                self.shown.display(),
+                name.display()
+            )),
         }
     }
 
     /// Rename one name to another inside this directory.
     pub fn rename(&self, from: &Path, to: &Path) -> Result<(), String> {
-        fs::renameat(&self.fd, from, &self.fd, to)
-            .map_err(|e| format!("{}: {} -> {}: {e}", self.shown.display(), from.display(), to.display()))
+        fs::renameat(&self.fd, from, &self.fd, to).map_err(|e| {
+            format!(
+                "{}: {} -> {}: {e}",
+                self.shown.display(),
+                from.display(),
+                to.display()
+            )
+        })
     }
 
     pub fn symlink(&self, target: &Path, name: &Path) -> Result<(), String> {
@@ -119,7 +129,11 @@ impl Dir {
                 Ok(_) => Ok(true),
                 Err(rustix::io::Errno::XDEV) | Err(rustix::io::Errno::LOOP) => Ok(false),
                 Err(rustix::io::Errno::NOENT) => Ok(true),
-                Err(error) => Err(format!("{}/{}: {error}", self.shown.display(), name.display())),
+                Err(error) => Err(format!(
+                    "{}/{}: {error}",
+                    self.shown.display(),
+                    name.display()
+                )),
             }
         }
         #[cfg(not(target_os = "linux"))]
@@ -226,7 +240,10 @@ mod tests {
         let dir = Dir::open(&root).unwrap();
         let refusal = dir.remove_symlink(Path::new("data")).unwrap_err();
         assert!(refusal.contains("found a directory"), "{refusal}");
-        assert!(root.join("data/save.dat").is_file(), "a directory was removed");
+        assert!(
+            root.join("data/save.dat").is_file(),
+            "a directory was removed"
+        );
 
         dir.remove_symlink(Path::new("link")).unwrap();
         assert!(stdfs::symlink_metadata(root.join("link")).is_err());
@@ -244,7 +261,8 @@ mod tests {
         dir.rename(Path::new("before"), Path::new("after")).unwrap();
         assert!(root.join("after").is_dir());
 
-        dir.symlink(Path::new("/somewhere"), Path::new("pointer")).unwrap();
+        dir.symlink(Path::new("/somewhere"), Path::new("pointer"))
+            .unwrap();
         assert_eq!(
             stdfs::read_link(root.join("pointer")).unwrap(),
             PathBuf::from("/somewhere")
