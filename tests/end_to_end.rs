@@ -293,7 +293,7 @@ fn fix_moves_the_data_and_keeps_the_original() {
     assert!(meta.file_type().is_symlink());
     let target = fs::read_link(fixture.compatdata()).unwrap();
     assert!(
-        target.starts_with(&fixture.home),
+        target.starts_with(fixture.data_home()),
         "target was {}",
         target.display()
     );
@@ -1265,9 +1265,16 @@ fn scan_reports_whether_it_saw_everything() {
     assert!(json.contains("\"eligible\":"), "{json}");
     assert!(json.contains("\"blocking_reason\":"), "{json}");
 
-    // On this host no filesystem identifies, so nothing is eligible and the
-    // reason says so rather than leaving it unexplained.
-    assert!(json.contains("could not be identified"), "{json}");
+    // An ineligible library carries an explanation rather than a null reason.
+    // What the reason is depends on the host: off Linux the filesystem cannot
+    // be identified; on Linux the fixture library is already on a native
+    // filesystem, so the reason is that no repair applies.
+    assert!(
+        json.contains("could not be identified")
+            || json.contains("no repair needed")
+            || json.contains("already on a Linux filesystem"),
+        "{json}"
+    );
 
     fs::write(
         fixture.steam.join("steamapps/libraryfolders.vdf"),
