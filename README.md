@@ -216,6 +216,8 @@ imported because Lutris already lists them through its Steam integration.
 Run a fresh scan first. Include the LibraryBridge version, Linux distribution
 and kernel, filesystem and mount driver, Steam installation type, and redacted
 command output when [opening an issue](https://github.com/amcdev7/LibraryBridge/issues).
+Use [GitHub Discussions](https://github.com/amcdev7/LibraryBridge/discussions)
+for questions, ideas, and general feedback.
 
 Do not attach saves, Proton prefixes, registry files, or Steam account data.
 
