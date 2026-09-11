@@ -8,10 +8,9 @@ Keep Windows game files on their existing drive while putting Proton data on a
 Linux filesystem. LibraryBridge also finds existing GOG and standalone games
 and adds them to Lutris.
 
-LibraryBridge runs on Linux. Download the latest release from the [releases
-page](https://github.com/amcdev7/LibraryBridge/releases): an AppImage, a
-portable desktop tarball (no FUSE required), or a command-line tarball. You
-can also build from source (below).
+LibraryBridge runs on Linux. Download the [latest release](https://github.com/amcdev7/LibraryBridge/releases/latest),
+currently **0.1.0**: an AppImage, a portable desktop tarball (no FUSE
+required), or a command-line tarball. You can also build from source (below).
 
 > LibraryBridge is independent and is not affiliated with or endorsed by Valve
 > Corporation. Steam and Proton are trademarks of Valve Corporation.
@@ -47,7 +46,7 @@ and saves are not moved.
 ## Install from source
 
 This is only needed if you want to build from source rather than use a
-release. The [latest release](https://github.com/amcdev7/LibraryBridge/releases)
+release. The [latest release](https://github.com/amcdev7/LibraryBridge/releases/latest)
 includes:
 
 - **LibraryBridge-*-x86_64.AppImage** — desktop GUI, requires FUSE
