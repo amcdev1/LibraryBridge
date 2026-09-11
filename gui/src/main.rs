@@ -1142,15 +1142,15 @@ impl App {
     }
 
     fn nav_active(&self, target: &Screen) -> bool {
-        match (target, &self.screen) {
-            (Screen::Home, Screen::Home) => true,
-            (Screen::Libraries, Screen::Libraries | Screen::Review { .. }) => true,
-            (Screen::Games, Screen::Games) => true,
-            (Screen::Storage, Screen::Storage) => true,
-            (Screen::Settings, Screen::Settings) => true,
-            (Screen::Help, Screen::Help) => true,
-            _ => false,
-        }
+        matches!(
+            (target, &self.screen),
+            (Screen::Home, Screen::Home)
+                | (Screen::Libraries, Screen::Libraries | Screen::Review { .. })
+                | (Screen::Games, Screen::Games)
+                | (Screen::Storage, Screen::Storage)
+                | (Screen::Settings, Screen::Settings)
+                | (Screen::Help, Screen::Help)
+        )
     }
 
     fn navigate_to(&mut self, screen: Screen) {
@@ -3079,11 +3079,13 @@ fn badge_colors(ui: &egui::Ui, tone: BadgeTone) -> (egui::Color32, egui::Color32
 }
 
 fn surface_card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let mut frame = egui::Frame::default();
-    frame.inner_margin = egui::Margin::same(18.0);
-    frame.rounding = egui::Rounding::same(12.0);
-    frame.fill = ui.visuals().window_fill();
-    frame.stroke = egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color);
+    let frame = egui::Frame {
+        inner_margin: egui::Margin::same(18.0),
+        rounding: egui::Rounding::same(12.0),
+        fill: ui.visuals().window_fill(),
+        stroke: egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+        ..Default::default()
+    };
     frame.show(ui, add_contents).inner
 }
 
@@ -3161,10 +3163,12 @@ fn nav_button(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
 
 fn status_pill(ui: &mut egui::Ui, label: impl Into<String>, tone: BadgeTone) {
     let (fill, text) = badge_colors(ui, tone);
-    let mut frame = egui::Frame::default();
-    frame.inner_margin = egui::Margin::symmetric(9.0, 4.0);
-    frame.rounding = egui::Rounding::same(999.0);
-    frame.fill = fill;
+    let frame = egui::Frame {
+        inner_margin: egui::Margin::symmetric(9.0, 4.0),
+        rounding: egui::Rounding::same(999.0),
+        fill,
+        ..Default::default()
+    };
     frame.show(ui, |ui| {
         ui.label(egui::RichText::new(label.into()).color(text).strong());
     });
