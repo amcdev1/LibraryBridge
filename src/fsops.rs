@@ -100,7 +100,7 @@ impl Manifest {
 /// Walk a tree without following symlinks, recording every entry.
 ///
 /// With `hash` set, regular files are read and digested. Without it, only
-/// metadata is collected, which is what the post-copy source recheck needs.
+/// metadata is collected for checks that do not need content comparison.
 pub fn inventory(root: &Path, hash: bool) -> Result<Manifest, String> {
     let mut manifest = Manifest::default();
     walk(root, Path::new(""), 0, hash, &mut manifest)?;
@@ -645,7 +645,24 @@ pub fn changed_since(before: &Manifest, after: &Manifest) -> Vec<String> {
         };
         let same_kind = match (&want.kind, &got.kind) {
             (Kind::Dir, Kind::Dir) => true,
-            (Kind::File { size: a, .. }, Kind::File { size: b, .. }) => a == b,
+            (
+                Kind::File {
+                    size: want_size,
+                    digest: want_digest,
+                    ..
+                },
+                Kind::File {
+                    size: got_size,
+                    digest: got_digest,
+                    ..
+                },
+            ) => {
+                want_size == got_size
+                    && match (want_digest, got_digest) {
+                        (Some(want), Some(got)) => want == got,
+                        _ => true,
+                    }
+            }
             (Kind::Symlink { target: a }, Kind::Symlink { target: b }) => a == b,
             _ => false,
         };

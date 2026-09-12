@@ -953,7 +953,8 @@ fn a_relative_link_pointing_outside_the_prefix_blocks_the_repair() {
 }
 
 /// R21. Applying quotes back the plan that was reviewed, and a plan that no
-/// longer matches is refused rather than applied to something else.
+/// longer matches is refused rather than applied to something else. Content
+/// changes are caught even when file count and total bytes stay the same.
 #[test]
 fn a_stale_plan_is_refused() {
     let fixture = Fixture::new("staleplan");
@@ -973,14 +974,12 @@ fn a_stale_plan_is_refused() {
     let output = fixture.run(&["fix", &id, "--dry-run", "--force", "--expect", &plan]);
     assert!(output.status.success());
 
-    // The library changes underneath it.
-    fs::write(
-        fixture
-            .compatdata()
-            .join(format!("{APPID}/pfx/new-file.dat")),
-        b"appeared later",
-    )
-    .unwrap();
+    // The library changes underneath it without changing its shape or size.
+    let save = fixture.save_file(&fixture.compatdata());
+    let original = fs::read(&save).unwrap();
+    let mut replacement = original.clone();
+    replacement.reverse();
+    fs::write(&save, &replacement).unwrap();
 
     let output = fixture.run(&["fix", &id, "--yes", "--force", "--expect", &plan]);
     assert!(!output.status.success());
@@ -993,6 +992,7 @@ fn a_stale_plan_is_refused() {
         .unwrap()
         .file_type()
         .is_symlink());
+    assert_eq!(fs::read(&save).unwrap(), replacement);
 }
 
 /// R14. Recovery must show the copy is complete before pointing Steam at it.

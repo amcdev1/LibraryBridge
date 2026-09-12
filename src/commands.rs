@@ -728,9 +728,11 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
     let mut hard_linked = 0usize;
     let mut sparse = 0usize;
     let mut sparse_saving = 0u64;
-    let (source_entries, source_bytes) = if source_exists {
+    let (source_entries, source_bytes, source_digest) = if source_exists {
         // One walk, used for the size, the link check and the plan identity.
-        let inventory = fsops::inventory(&library.compatdata, false)?;
+        // Hashing here makes --expect pin the contents reviewed by the user,
+        // not just the shape of the tree.
+        let inventory = fsops::inventory(&library.compatdata, true)?;
 
         let escaping = fsops::escaping_relative_links(&library.compatdata, &inventory);
         if !escaping.is_empty() {
@@ -750,14 +752,25 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
         hard_linked = inventory.hard_linked.len();
         sparse = inventory.sparse.len();
         sparse_saving = inventory.sparse_saving;
-        (inventory.entries.len(), inventory.bytes)
+        (
+            inventory.entries.len(),
+            inventory.bytes,
+            fsops::manifest_digest(&inventory),
+        )
     } else {
-        (0, 0)
+        (0, 0, String::new())
     };
 
     // What was reviewed, in one line. An apply that quotes a different one is
     // acting on something the user never saw.
-    let fingerprint = plan_fingerprint(library, &report, &target, source_entries, source_bytes);
+    let fingerprint = plan_fingerprint(
+        library,
+        &report,
+        &target,
+        source_entries,
+        source_bytes,
+        &source_digest,
+    );
 
     // Something is already at the destination. If it is the same tree we are
     // about to copy, it is the leftover from an undone repair and can be set
@@ -894,14 +907,7 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
         }
     );
 
-    if let Some(expected) = &options.expect {
-        if expected != &fingerprint {
-            return Err(format!(
-                "this library has changed since the plan was reviewed. It was {expected} and \
-                 is now {fingerprint}. Nothing was done. Review it again."
-            ));
-        }
-    }
+    ensure_expected_plan(options.expect.as_deref(), &fingerprint)?;
 
     if options.dry_run {
         println!();
@@ -911,6 +917,33 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
     if !options.assume_yes && !confirm("Continue?")? {
         println!("Cancelled. Nothing was changed.");
         return Ok(0);
+    }
+
+    // The user may have taken time to review and confirm the plan. Re-read
+    // the state and source immediately before the first write so --expect
+    // also catches changes that happened after the initial review check.
+    if options.expect.is_some() {
+        let current_report = state::inspect(library);
+        let current_source_exists = matches!(current_report.state, State::NotRepaired { .. });
+        let (current_entries, current_bytes, current_digest) = if current_source_exists {
+            let current = fsops::inventory(&library.compatdata, true)?;
+            (
+                current.entries.len(),
+                current.bytes,
+                fsops::manifest_digest(&current),
+            )
+        } else {
+            (0, 0, String::new())
+        };
+        let current_fingerprint = plan_fingerprint(
+            library,
+            &current_report,
+            &target,
+            current_entries,
+            current_bytes,
+            &current_digest,
+        );
+        ensure_expected_plan(options.expect.as_deref(), &current_fingerprint)?;
     }
 
     // --- apply ---------------------------------------------------------
@@ -996,7 +1029,7 @@ pub fn fix(options: &Options, reference: &str) -> Result<i32, String> {
             ));
         }
 
-        let source_now = fsops::inventory(&library.compatdata, false)?;
+        let source_now = fsops::inventory(&library.compatdata, true)?;
         let changes = fsops::changed_since(&source_manifest, &source_now);
         if !changes.is_empty() {
             return Err(format!(
@@ -1636,14 +1669,15 @@ fn keep_destination(
 }
 
 /// A short identity for what is about to happen: which library, from where,
-/// to where, in what state, and how much data. Anything that would change the
-/// operation changes this.
+/// to where, in what state, and which source contents. Anything that would
+/// change the operation changes this.
 fn plan_fingerprint(
     library: &Library,
     report: &state::Report,
     target: &Path,
     entries: usize,
     bytes: u64,
+    source_digest: &str,
 ) -> String {
     let mut hasher = Sha256::new();
     for part in [
@@ -1658,7 +1692,20 @@ fn plan_fingerprint(
     }
     hasher.update(&(entries as u64).to_le_bytes());
     hasher.update(&bytes.to_le_bytes());
+    hasher.update(source_digest.as_bytes());
     hex(&hasher.finish())[..16].to_string()
+}
+
+fn ensure_expected_plan(expected: Option<&str>, fingerprint: &str) -> Result<(), String> {
+    if let Some(expected) = expected {
+        if expected != fingerprint {
+            return Err(format!(
+                "this library has changed since the plan was reviewed. It was {expected} and \
+                 is now {fingerprint}. Nothing was done. Review it again."
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The reviewed plan as data, so a frontend does not have to read prose to
